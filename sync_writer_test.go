@@ -60,7 +60,7 @@ func ExampleClient_SyncWriter() {
 	fmt.Println("Wrote", n, "bytes")
 }
 
-func TestSyncWriterTwoIWriter(t *testing.T) {
+func TestSyncWriterTwoInstances(t *testing.T) {
 	// defer LogToStderr()()
 
 	mb1 := NewMockBroker(t, 1)
@@ -109,7 +109,7 @@ func TestSyncWriterTwoIWriter(t *testing.T) {
 	}
 }
 
-func TestSyncWriterOneWriter(t *testing.T) {
+func TestSyncWriterOneInstance(t *testing.T) {
 	// defer LogToStderr()()
 	mb1 := NewMockBroker(t, 1)
 	mb2 := NewMockBroker(t, 2)
