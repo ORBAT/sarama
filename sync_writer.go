@@ -103,7 +103,8 @@ func (k *SyncWriter) Closed() (closed bool) {
 	return
 }
 
-// CloseBoth closes the SyncWriter and the client. Returns syscall.EINVAL if the producer is already closed, and an error of type *MultiError
+// CloseBoth closes the SyncWriter and the client. Returns syscall.EINVAL if the producer is already closed, and an error of type *MultiError if one or both of
+// Producer#Close() and Client#Close() returns an error.
 func (k *SyncWriter) CloseBoth() (err error) {
 	if k.Closed() {
 		return syscall.EINVAL
