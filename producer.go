@@ -81,6 +81,7 @@ type Producer struct {
 	config             ProducerConfig
 	errors             chan *ProduceError
 	input, readyToSend chan *MessageToSend
+	stopper            chan struct{}
 }
 
 // NewProducer creates a new Producer using the given client.
@@ -105,6 +106,7 @@ func NewProducer(client *Client, config *ProducerConfig) (*Producer, error) {
 		errors:      make(chan *ProduceError),
 		input:       make(chan *MessageToSend),
 		readyToSend: make(chan *MessageToSend),
+		stopper:     make(chan struct{}),
 	}
 
 	// launch our singleton dispatchers
@@ -117,10 +119,11 @@ func NewProducer(client *Client, config *ProducerConfig) (*Producer, error) {
 type flagSet int8
 
 const (
-	retried flagSet = 1 << iota
-	chaser
-	ref
-	unref
+	retried  flagSet = 1 << iota // message has been retried
+	chaser                       // message is last in a group that failed
+	ref                          // add a reference to a singleton channel
+	unref                        // remove a reference from a singleton channel
+	shutdown                     // start the shutdown process
 )
 
 // MessageToSend is the collection of elements passed to the Producer in order to send a message.
@@ -135,7 +138,7 @@ type MessageToSend struct {
 }
 
 func (m *MessageToSend) byteSize() int {
-	size := 16 // 16 is approx. metadata overhead of CRC etc.
+	size := 14 // the metadata overhead of CRC, flags, etc.
 	if m.Key != nil {
 		size += m.Key.Length()
 	}
@@ -169,6 +172,8 @@ func (p *Producer) Input() chan<- *MessageToSend {
 // it may otherwise leak memory. You must call this before calling Close on the
 // underlying client.
 func (p *Producer) Close() error {
+	p.input <- &MessageToSend{flags: shutdown}
+	<-p.stopper
 	close(p.input)
 	return nil
 }
@@ -182,10 +187,23 @@ func (p *Producer) Close() error {
 // singleton
 func (p *Producer) topicDispatcher() {
 	handlers := make(map[string]chan *MessageToSend)
+	refs := 0
 
-	for msg := range p.input {
+	for {
+		msg := <-p.input
+
 		if msg == nil {
 			Logger.Printf("somebody sent a nil message to the producer, it was ignored")
+			continue
+		}
+
+		if msg.flags&shutdown != 0 {
+			break
+		} else if msg.flags&ref != 0 {
+			refs++
+			continue
+		} else if msg.flags&unref != 0 {
+			refs--
 			continue
 		}
 
@@ -207,6 +225,19 @@ func (p *Producer) topicDispatcher() {
 	for _, handler := range handlers {
 		close(handler)
 	}
+
+	for refs > 0 {
+		msg := <-p.input
+		if msg.flags&ref != 0 {
+			refs++
+		} else if msg.flags&unref != 0 {
+			refs--
+		} else {
+			p.errors <- &ProduceError{Msg: msg, Err: ShuttingDown}
+		}
+	}
+
+	close(p.stopper)
 }
 
 // one per topic
@@ -318,6 +349,7 @@ func (p *Producer) brokerDispatcher() {
 		} else {
 			handler := handlers[msg.broker]
 			if handler == nil {
+				p.input <- &MessageToSend{flags: ref}
 				handler = make(chan *MessageToSend)
 				go p.messageAggregator(msg.broker, handler)
 				handlers[msg.broker] = handler
@@ -478,6 +510,7 @@ func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 			}
 		}
 	}
+	p.input <- &MessageToSend{flags: unref}
 }
 
 ///////////////////////////////////////////
