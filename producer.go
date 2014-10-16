@@ -8,15 +8,16 @@ func forceFlushThreshold() int {
 
 // ProducerConfig is used to pass multiple configuration options to NewProducer.
 type ProducerConfig struct {
-	Partitioner     Partitioner      // Chooses the partition to send messages to (defaults to random).
-	RequiredAcks    RequiredAcks     // The level of acknowledgement reliability needed from the broker (defaults to WaitForLocal).
-	Timeout         time.Duration    // The maximum duration the broker will wait the receipt of the number of RequiredAcks. This is only relevant when RequiredAcks is set to WaitForAll or a number > 1. Only supports millisecond resolution, nanoseconds will be truncated.
-	Compression     CompressionCodec // The type of compression to use on messages (defaults to no compression).
-	FlushMsgCount   int              // The number of messages needed to trigger a flush.
-	FlushFrequency  time.Duration    // If this amount of time elapses without a flush, one will be queued.
-	FlushByteCount  int              // If this many bytes of messages are accumulated, a flush will be triggered.
-	AckSuccesses    bool             // If enabled, successfully delivered messages will also be returned on the Errors channel, with a nil Err field
-	MaxMessageBytes int              // The maximum permitted size of a message (defaults to 1000000)
+	Partitioner       Partitioner      // Chooses the partition to send messages to (defaults to random).
+	RequiredAcks      RequiredAcks     // The level of acknowledgement reliability needed from the broker (defaults to WaitForLocal).
+	Timeout           time.Duration    // The maximum duration the broker will wait the receipt of the number of RequiredAcks. This is only relevant when RequiredAcks is set to WaitForAll or a number > 1. Only supports millisecond resolution, nanoseconds will be truncated.
+	Compression       CompressionCodec // The type of compression to use on messages (defaults to no compression).
+	FlushMsgCount     int              // The number of messages needed to trigger a flush.
+	FlushFrequency    time.Duration    // If this amount of time elapses without a flush, one will be queued.
+	FlushByteCount    int              // If this many bytes of messages are accumulated, a flush will be triggered.
+	AckSuccesses      bool             // If enabled, successfully delivered messages will also be returned on the Errors channel, with a nil Err field
+	MaxMessageBytes   int              // The maximum permitted size of a message (defaults to 1000000)
+	ChannelBufferSize int              // The size of the buffers of the channels between the different goroutines. Defaults to 0 (unbuffered).
 }
 
 // NewProducerConfig creates a new ProducerConfig instance with sensible defaults.
@@ -195,7 +196,7 @@ func (p *Producer) topicDispatcher() {
 
 		handler := handlers[msg.Topic]
 		if handler == nil {
-			handler = make(chan *MessageToSend)
+			handler = make(chan *MessageToSend, p.config.ChannelBufferSize)
 			go p.partitionDispatcher(msg.Topic, handler)
 			handlers[msg.Topic] = handler
 		}
@@ -223,7 +224,7 @@ func (p *Producer) partitionDispatcher(topic string, input chan *MessageToSend) 
 
 		handler := handlers[msg.partition]
 		if handler == nil {
-			handler = make(chan *MessageToSend)
+			handler = make(chan *MessageToSend, p.config.ChannelBufferSize)
 			go p.leaderDispatcher(msg.Topic, msg.partition, handler)
 			handlers[msg.partition] = handler
 		}
