@@ -16,7 +16,6 @@ type SyncWriter struct {
 	kp       *Producer
 	id       string
 	topic    string
-	kc       *Client
 	closed   bool
 	closedCh chan struct{}
 	log      *log.Logger
@@ -27,8 +26,8 @@ type SyncWriter struct {
 // NewSyncWriter returns a new SyncWriter.
 // If config is nil, sarama default ProducerConfig will be used.
 func (c *Client) NewSyncWriter(topic string, config *ProducerConfig) (p *SyncWriter, err error) {
-	id := "blocking_prod" + TimestampRandom()
-	pl := NewLogger(fmt.Sprintf("BlockPR %s -> %s", id, topic), nil)
+	id := "syncw-" + TimestampRandom()
+	pl := NewLogger(fmt.Sprintf("SyncWr %s -> %s", id, topic), nil)
 
 	pl.Println("Creating producer")
 
@@ -38,7 +37,7 @@ func (c *Client) NewSyncWriter(topic string, config *ProducerConfig) (p *SyncWri
 		return nil, err
 	}
 
-	p = &SyncWriter{kp: kp, id: id, topic: topic, kc: c, log: pl, closedCh: make(chan struct{})}
+	p = &SyncWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: make(chan struct{})}
 	return
 }
 
@@ -90,7 +89,7 @@ func (k *SyncWriter) Write(p []byte) (n int, err error) {
 
 // Client returns the client used by the SyncWriter.
 func (k *SyncWriter) Client() *Client {
-	return k.kc
+	return k.kp.client
 }
 
 // Closed returns true if the SyncWriter has been closed, false otherwise. Thread-safe.
@@ -118,7 +117,7 @@ func (k *SyncWriter) CloseBoth() (err error) {
 
 	k.log.Println("Closing client")
 
-	if clerr := k.kc.Close(); clerr != nil {
+	if clerr := k.kp.client.Close(); clerr != nil {
 		if me == nil {
 			me = &MultiError{Errors: make([]error, 0, 1)}
 		}
