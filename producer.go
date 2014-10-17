@@ -133,8 +133,21 @@ type MessageToSend struct {
 
 	// these are filled in by the producer as the message is processed
 	broker    *Broker
+	offset    int64
 	partition int32
 	flags     flagSet
+}
+
+// Offset is the offset of the message stored on the broker. This is only guaranteed to be defined if
+// the message was successfully delivered and RequiredAcks is not NoResponse.
+func (m *MessageToSend) Offset() int64 {
+	return m.offset
+}
+
+// Partition is the partition that the message was sent to. This is only guaranteed to be defined if
+// the message was successfully delivered.
+func (m *MessageToSend) Partition() int32 {
+	return m.partition
 }
 
 func (m *MessageToSend) byteSize() int {
@@ -496,6 +509,9 @@ func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 				case NoError:
 					// All the messages for this topic-partition were delivered successfully!
 					if p.config.AckSuccesses {
+						for i := range msgs {
+							msgs[i].offset = block.Offset + int64(i)
+						}
 						p.returnMessages(msgs, nil)
 					}
 				case UnknownTopicOrPartition, NotLeaderForPartition, LeaderNotAvailable:
