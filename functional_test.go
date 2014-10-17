@@ -20,7 +20,7 @@ var (
 func init() {
 	kafkaAddr = os.Getenv("KAFKA_ADDR")
 	if kafkaAddr == "" {
-		kafkaAddr = "localhost:9092"
+		kafkaAddr = "localhost:6667"
 	}
 
 	c, err := net.Dial("tcp", kafkaAddr)
