@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-// UnsafeWriter is an io.Writer that writes messages to Kafka, ignoring error responses sent by the brokers.
+// UnsafeWriter is an io.Writer that writes messages to Kafka, ignoring any error responses sent by the brokers.
 //
 // Close() must be called when the writer is no longer needed.
 type UnsafeWriter struct {
@@ -38,24 +38,24 @@ func (c *Client) NewUnsafeWriter(topic string, config *ProducerConfig) (p *Unsaf
 		return nil, err
 	}
 
-	go func(errCh chan error, closedCh chan struct{}) {
+	go func(errCh <-chan *ProduceError, closedCh chan struct{}, pl *log.Logger) {
 		pl.Println("Starting error listener")
 		for {
 			select {
 			case <-closedCh:
 				pl.Println("Closing error listener")
 				return
-			case err, ok := <-kp.Errors():
+			case perr, ok := <-errCh:
 				if !ok {
 					pl.Println("Errors() channel closed?!")
 					return
 				}
-				if err != nil {
+				if perr.Err != nil {
 					pl.Println("Got error from Kafka:", err)
 				}
 			}
 		}
-	}(kp.Errors(), closedCh)
+	}(kp.Errors(), closedCh, pl)
 
 	p = &UnsafeWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: closedCh}
 	return
@@ -74,37 +74,25 @@ func NewUnsafeWriter(clientId, topic string, brokers []string, pConfig *Producer
 	return
 }
 
-// ReadFrom reads all available bytes from r and writes them to Kafka. Implements io.ReaderFrom.
+// ReadFrom reads all available bytes from r and writes them to Kafka without checking for broker error responses. The returned
+// error will be either nil or anything returned when reading from r. The returned int64 will always be the total length of bytes read from r,
+// or 0 if reading from r returned an error. Implements io.ReaderFrom
 //
 // Note that UnsafeWriter doesn't support "streaming", so r is read in full before it's sent.
-func (k *UnsafeWriter) ReadFrom(r io.Reader) (n int64, err error) {
+func (k *UnsafeWriter) ReadFrom(r io.Reader) (int64, error) {
 	bs, err := ioutil.ReadAll(r)
 	if err != nil {
 		return 0, err
 	}
-
-	n = int64(len(bs))
-
-	err = k.kp.QueueMessage(k.topic, nil, ByteEncoder(bs))
-	if err != nil {
-		n = 0
-	}
-
-	return
+	ni, _ := k.Write(bs)
+	return int64(ni), nil
 }
 
-// Write writes byte slices to Kafka, blocking until the write has been acknowledged (see ProducerConfig's RequiredAcks field.)
-// Each written slice is sent out as a single message.
-//
-// n is len(p) if the send succeeds and 0 in case of errors.
+// Write writes byte slices to Kafka without checking for error responses. n will always be len(p) and err will be nil
 func (k *UnsafeWriter) Write(p []byte) (n int, err error) {
 	n = len(p)
+	k.kp.Input() <- &MessageToSend{Topic: k.topic, Key: nil, Value: ByteEncoder(p)}
 
-	err = k.kp.QueueMessage(k.topic, nil, ByteEncoder(p))
-
-	if err != nil {
-		n = 0
-	}
 	return
 }
 

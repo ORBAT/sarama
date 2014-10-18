@@ -61,7 +61,8 @@ func TestUnsafeWriterFunctional(t *testing.T) {
 	}
 	defer consumer.Close()
 	pc := NewProducerConfig()
-	pc.MaxBufferTime = 100 * time.Millisecond
+
+	pc.FlushFrequency = 100 * time.Millisecond
 	producer, err := client.NewUnsafeWriter("single_partition", nil)
 	if err != nil {
 		t.Fatal(err)

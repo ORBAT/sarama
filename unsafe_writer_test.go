@@ -10,7 +10,7 @@ import (
 
 func fastFlushConfig() *ProducerConfig {
 	config := NewProducerConfig()
-	config.MaxBufferTime = 1 * time.Millisecond // fast flush
+	config.FlushFrequency = 1 * time.Millisecond // fast flush
 	return config
 }
 
@@ -149,8 +149,7 @@ func BenchmarkKafkaUnsafeProdNoCompressionCluster(b *testing.B) {
 	if err != nil {
 		panic(err)
 	}
-	conf := NewProducerConfig()
-	conf.MaxBufferTime = 50 * time.Millisecond
+	conf := fastFlushConfig()
 	kp, err := kc.NewUnsafeWriter("no-compr-prod-bench-c", conf)
 	testMsg := make([]byte, 255)
 	for i := range testMsg {
@@ -170,8 +169,7 @@ func BenchmarkKafkaUnsafeProdNoCompressionSingle(b *testing.B) {
 	if err != nil {
 		panic(err)
 	}
-	conf := NewProducerConfig()
-	conf.MaxBufferTime = 50 * time.Millisecond
+	conf := fastFlushConfig()
 	kp, err := kc.NewUnsafeWriter("no-compr-prod-bench", conf)
 	testMsg := make([]byte, 255)
 	for i := range testMsg {

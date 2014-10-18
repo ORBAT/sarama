@@ -24,12 +24,17 @@ type SyncWriter struct {
 }
 
 // NewSyncWriter returns a new SyncWriter.
-// If config is nil, sarama default ProducerConfig will be used.
+// If config is nil, sarama default ProducerConfig will be used. AckSuccesses is always set to true.
 func (c *Client) NewSyncWriter(topic string, config *ProducerConfig) (p *SyncWriter, err error) {
 	id := "syncw-" + TimestampRandom()
 	pl := NewLogger(fmt.Sprintf("SyncWr %s -> %s", id, topic), nil)
 
 	pl.Println("Creating producer")
+
+	if config == nil {
+		config = NewProducerConfig()
+		config.AckSuccesses = true
+	}
 
 	kp, err := NewProducer(c, config)
 
@@ -54,36 +59,31 @@ func NewSyncWriter(clientId, topic string, brokers []string, pConfig *ProducerCo
 	return
 }
 
-// ReadFrom reads all available bytes from r and writes them to Kafka. Implements io.ReaderFrom.
-//
-// Note that SyncWriter doesn't support "streaming", so r is read in full before it's sent.
+// ReadFrom reads all available bytes from r and writes them to Kafka in a single message. Implements io.ReaderFrom.
 func (k *SyncWriter) ReadFrom(r io.Reader) (n int64, err error) {
-	bs, err := ioutil.ReadAll(r)
+	p, err := ioutil.ReadAll(r)
 	if err != nil {
 		return 0, err
 	}
 
-	n = int64(len(bs))
-
-	err = k.kp.SendMessage(k.topic, nil, ByteEncoder(bs))
-	if err != nil {
-		n = 0
-	}
-
-	return
+	ni, err := k.Write(p)
+	return int64(ni), err
 }
 
-// Write writes byte slices to Kafka, blocking until the write has been acknowledged (see ProducerConfig's RequiredAcks field.)
-// Each written slice is sent out as a single message.
+// Write writes byte slices to Kafka, blocking until the write has been acknowledged. Each written slice is sent out as a single message, with no
+// message batching.
 //
 // n is len(p) if the send succeeds and 0 in case of errors.
 func (k *SyncWriter) Write(p []byte) (n int, err error) {
 	n = len(p)
-	err = k.kp.SendMessage(k.topic, nil, ByteEncoder(p))
+	k.kp.Input() <- &MessageToSend{Topic: k.topic, Key: nil, Value: ByteEncoder(p)}
+	perr := <-k.kp.Errors()
 
-	if err != nil {
+	if perr.Err != nil {
 		n = 0
+		err = perr.Err
 	}
+
 	return
 }
 
