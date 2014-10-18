@@ -45,7 +45,7 @@ func checkKafkaAvailability(t *testing.T) {
 func TestUnsafeWriterFunctional(t *testing.T) {
 
 	checkKafkaAvailability(t)
-
+	defer LogTo(os.Stderr)()
 	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +99,7 @@ func TestUnsafeWriterFunctional(t *testing.T) {
 func TestSyncWriterFunctional(t *testing.T) {
 
 	checkKafkaAvailability(t)
-
+	defer LogTo(os.Stderr)()
 	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
 	if err != nil {
 		t.Fatal(err)

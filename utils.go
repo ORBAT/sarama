@@ -6,7 +6,6 @@ import (
 	"io/ioutil"
 	"log"
 	"math/rand"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -109,15 +108,14 @@ func NewLogger(prefix string, out io.Writer) *log.Logger {
 	return log.New(out, fmt.Sprintf("[%s] ", prefix), log.Ldate|log.Lmicroseconds)
 }
 
-// LogToStderr makes all of sarama's loggers output to stderr by replacing Logger and LogOutput. It returns a function that
-// sets LogOutput and Logger to whatever values they had before the call to LogToStderr.
+// LogTo makes all of sarama's loggers output to the given writer by replacing Logger and LogOutput. It returns a function that
+// sets LogOutput and Logger to whatever values they had before the call to LogTo.
 //
-// As an example, defer LogToStderr()() would start logging to stderr immediately and defer restoring the loggers.
-func LogToStderr() func() {
+// As an example, defer LogTo(os.Stderr)() would start logging to stderr immediately and defer restoring the loggers.
+func LogTo(w io.Writer) func() {
 	oldLogger := Logger
 	oldOutput := LogOutput
-
-	LogOutput = os.Stderr
+	LogOutput = w
 	Logger = NewLogger("Sarama", LogOutput)
 	return func() {
 		LogOutput = oldOutput

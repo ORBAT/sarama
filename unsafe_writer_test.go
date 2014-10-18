@@ -2,6 +2,7 @@ package sarama
 
 import (
 	"fmt"
+	"os"
 
 	"sync"
 	"testing"
@@ -51,7 +52,7 @@ func testUnsafeProd(kp *UnsafeWriter, wg *sync.WaitGroup, t *testing.T) {
 
 func TestUnsafeWriterTwoInstances(t *testing.T) {
 	t.Skip("Doesn't work")
-	defer LogToStderr()()
+	defer LogTo(os.Stderr)()
 	mb1 := NewMockBroker(t, 1)
 	mb2 := NewMockBroker(t, 2)
 	defer mb1.Close()
@@ -105,7 +106,7 @@ func TestUnsafeWriterTwoInstances(t *testing.T) {
 
 func TestUnsafeWriterOneInstance(t *testing.T) {
 	t.Skip("Doesn't work")
-	defer LogToStderr()()
+	defer LogTo(os.Stderr)()
 	mb1 := NewMockBroker(t, 1)
 	mb2 := NewMockBroker(t, 2)
 	defer mb1.Close()
@@ -144,7 +145,7 @@ func TestUnsafeWriterOneInstance(t *testing.T) {
 }
 
 func BenchmarkKafkaUnsafeProdNoCompressionCluster(b *testing.B) {
-	// defer LogToStderr()()
+	// defer LogTo(os.Stderr)()
 	kc, err := NewClient("no-compr-benchmark-c", clusterBroker, nil)
 	if err != nil {
 		panic(err)
@@ -164,7 +165,7 @@ func BenchmarkKafkaUnsafeProdNoCompressionCluster(b *testing.B) {
 }
 
 func BenchmarkKafkaUnsafeProdNoCompressionSingle(b *testing.B) {
-	// defer LogToStderr()()
+	// defer LogTo(os.Stderr)()
 	kc, err := NewClient("no-compr-benchmark", []string{"127.0.0.1:9092"}, nil)
 	if err != nil {
 		panic(err)

@@ -61,7 +61,7 @@ func ExampleClient_SyncWriter() {
 }
 
 func TestSyncWriterTwoInstances(t *testing.T) {
-	// defer LogToStderr()()
+	// defer LogTo(os.Stderr)()
 
 	mb1 := NewMockBroker(t, 1)
 	mb2 := NewMockBroker(t, 2)
@@ -110,7 +110,7 @@ func TestSyncWriterTwoInstances(t *testing.T) {
 }
 
 func TestSyncWriterOneInstance(t *testing.T) {
-	// defer LogToStderr()()
+	// defer LogTo(os.Stderr)()
 	mb1 := NewMockBroker(t, 1)
 	mb2 := NewMockBroker(t, 2)
 	defer mb1.Close()
@@ -147,7 +147,7 @@ func TestSyncWriterOneInstance(t *testing.T) {
 }
 
 func BenchmarkKafkaProdNoCompressionCluster(b *testing.B) {
-	// defer LogToStderr()()
+	// defer LogTo(os.Stderr)()
 	kc, err := NewClient("no-compr-benchmark-c", clusterBroker, nil)
 	if err != nil {
 		panic(err)
@@ -167,7 +167,7 @@ func BenchmarkKafkaProdNoCompressionCluster(b *testing.B) {
 }
 
 func BenchmarkKafkaProdNoCompressionSingle(b *testing.B) {
-	// defer LogToStderr()()
+	// defer LogTo(os.Stderr)()
 	kc, err := NewClient("no-compr-benchmark", []string{"127.0.0.1:9092"}, nil)
 	if err != nil {
 		panic(err)
