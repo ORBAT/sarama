@@ -23,7 +23,7 @@ type SyncWriter struct {
 }
 
 // NewSyncWriter returns a new SyncWriter.
-// If config is nil, sarama default ProducerConfig will be used. AckSuccesses is always set to true.
+// If config is nil, sarama default ProducerConfig will be used. AckSuccesses is always set to true and FlushMsgCount to 1.
 func (c *Client) NewSyncWriter(topic string, config *ProducerConfig) (p *SyncWriter, err error) {
 	id := "syncw-" + TimestampRandom()
 	pl := NewLogger(fmt.Sprintf("SyncWr %s -> %s", id, topic), nil)
@@ -32,9 +32,11 @@ func (c *Client) NewSyncWriter(topic string, config *ProducerConfig) (p *SyncWri
 
 	if config == nil {
 		config = NewProducerConfig()
-		config.AckSuccesses = true
+
 	}
 
+	config.AckSuccesses = true
+	config.FlushMsgCount = 1
 	kp, err := NewProducer(c, config)
 
 	if err != nil {
