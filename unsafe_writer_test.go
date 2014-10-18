@@ -5,29 +5,39 @@ import (
 
 	"sync"
 	"testing"
+	"time"
 )
+
+func fastFlushConfig() *ProducerConfig {
+	config := NewProducerConfig()
+	config.MaxBufferTime = 1 * time.Millisecond // fast flush
+	return config
+}
 
 func ExampleClient_UnsafeWriter() {
 	kc, _ := NewClient("clientId", []string{"localhost:9092"}, nil)
+
 	kp, _ := kc.NewUnsafeWriter("some-topic", nil)
-
-	kp.Write([]byte("data"))
-
-	kp2, _ := kc.NewUnsafeWriter("another-topic", nil)
-
-	n, err := kp2.Write([]byte{1, 2, 3, 4})
+	n, err := kp.Write([]byte("data"))
 	if err != nil {
 		panic(err)
 	}
-	fmt.Println("Wrote", n, "bytes")
+	fmt.Println("Wrote", n, "bytes to some-topic")
+
+	kp2, _ := kc.NewUnsafeWriter("another-topic", nil)
+	n, err = kp2.Write([]byte{1, 2, 3, 4})
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Wrote", n, "bytes to another-topic")
 }
 
 func testUnsafeProd(kp *UnsafeWriter, wg *sync.WaitGroup, t *testing.T) {
 	defer wg.Done()
 	defer safeClose(kp)
 	for i := 0; i < 10; i++ {
-		n, err := kp.Write([]byte{1, 2, 3, 4, 5})
-		if n != 5 {
+		n, err := kp.Write([]byte(TestMessage))
+		if n != len(TestMessage) {
 			t.Fatalf("wrote %d bytes in write #%d?", n, i)
 		}
 
@@ -67,12 +77,14 @@ func TestUnsafeWriterTwoInstances(t *testing.T) {
 		}
 	}(kc)
 	defer safeClose(kc)
-	kp, err := kc.NewUnsafeWriter("test-topic", nil)
+	pc := fastFlushConfig()
+
+	kp, err := kc.NewUnsafeWriter("test-topic", pc)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	kp2, err := kc.NewUnsafeWriter("test-topic", nil)
+	kp2, err := kc.NewUnsafeWriter("test-topic", pc)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,6 +94,8 @@ func TestUnsafeWriterTwoInstances(t *testing.T) {
 	go testUnsafeProd(kp, wg, t)
 	go testUnsafeProd(kp2, wg, t)
 	wg.Wait()
+
+	<-time.After(5 * time.Millisecond)
 
 	if !kp.Closed() || !kp2.Closed() {
 		t.Errorf("Either kp (%t) or kp2 (%t) wasn't closed", kp.Closed(), kp2.Closed())
@@ -106,16 +120,16 @@ func TestUnsafeWriterOneInstance(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		mb2.Returns(pr)
 	}
-
-	kp, err := NewUnsafeWriter("testid2", "test-topic", []string{mb1.Addr()}, nil, nil)
+	pc := fastFlushConfig()
+	kp, err := NewUnsafeWriter("testid2", "test-topic", []string{mb1.Addr()}, pc, nil)
 	if err != nil {
 		panic(err)
 	}
 	defer safeCloseBoth(kp)
 
 	for i := 0; i < 10; i++ {
-		n, err := kp.Write([]byte{1, 2, 3, 4})
-		if n != 4 {
+		n, err := kp.Write([]byte(TestMessage))
+		if n != len(TestMessage) {
 			t.Errorf("wrote %d bytes in write #%d?", n, i)
 		}
 
@@ -123,6 +137,8 @@ func TestUnsafeWriterOneInstance(t *testing.T) {
 			panic(err)
 		}
 	}
+
+	<-time.After(5 * time.Millisecond)
 }
 
 func BenchmarkKafkaUnsafeProdNoCompressionCluster(b *testing.B) {
@@ -132,6 +148,7 @@ func BenchmarkKafkaUnsafeProdNoCompressionCluster(b *testing.B) {
 		panic(err)
 	}
 	conf := NewProducerConfig()
+	conf.MaxBufferTime = 50 * time.Millisecond
 	kp, err := kc.NewUnsafeWriter("no-compr-prod-bench-c", conf)
 	testMsg := make([]byte, 255)
 	for i := range testMsg {
@@ -152,6 +169,7 @@ func BenchmarkKafkaUnsafeProdNoCompressionSingle(b *testing.B) {
 		panic(err)
 	}
 	conf := NewProducerConfig()
+	conf.MaxBufferTime = 50 * time.Millisecond
 	kp, err := kc.NewUnsafeWriter("no-compr-prod-bench", conf)
 	testMsg := make([]byte, 255)
 	for i := range testMsg {
