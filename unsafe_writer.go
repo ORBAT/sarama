@@ -50,7 +50,9 @@ func (c *Client) NewUnsafeWriter(topic string, config *ProducerConfig) (p *Unsaf
 					pl.Println("Errors() channel closed?!")
 					return
 				}
-				pl.Println("Got error from Kafka:", err)
+				if err != nil {
+					pl.Println("Got error from Kafka:", err)
+				}
 			}
 		}
 	}(kp.Errors(), closedCh)
