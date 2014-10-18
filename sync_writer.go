@@ -16,7 +16,6 @@ type SyncWriter struct {
 	kp       *Producer
 	id       string
 	topic    string
-	closed   bool
 	closedCh chan struct{}
 	log      *log.Logger
 	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseBoth()
