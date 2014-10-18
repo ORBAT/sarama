@@ -43,6 +43,23 @@ func checkKafkaAvailability(t *testing.T) {
 	}
 }
 
+func TestFuncQueuingWriter(t *testing.T) {
+	pc := NewProducerConfig()
+	defer LogTo(os.Stderr)()
+	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	pc.FlushFrequency = 100 * time.Millisecond
+	producer, err := client.NewQueuingWriter("single_partition", pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testWriter(client, producer, t)
+}
+
 func TestFuncUnsafeWriter(t *testing.T) {
 	pc := NewProducerConfig()
 	defer LogTo(os.Stderr)()
