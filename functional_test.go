@@ -2,6 +2,7 @@ package sarama
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"testing"
@@ -42,15 +43,26 @@ func checkKafkaAvailability(t *testing.T) {
 	}
 }
 
-func TestUnsafeWriterFunctional(t *testing.T) {
-
-	checkKafkaAvailability(t)
+func TestFuncUnsafeWriter(t *testing.T) {
+	pc := NewProducerConfig()
 	defer LogTo(os.Stderr)()
 	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
+
+	pc.FlushFrequency = 100 * time.Millisecond
+	producer, err := client.NewUnsafeWriter("single_partition", pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testWriter(client, producer, t)
+}
+
+func testWriter(client *Client, producer io.WriteCloser, t *testing.T) {
+
+	checkKafkaAvailability(t)
 
 	consumerConfig := NewConsumerConfig()
 	consumerConfig.OffsetMethod = OffsetMethodNewest
@@ -60,17 +72,12 @@ func TestUnsafeWriterFunctional(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer consumer.Close()
-	pc := NewProducerConfig()
 
-	pc.FlushFrequency = 100 * time.Millisecond
-	producer, err := client.NewUnsafeWriter("single_partition", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var msg []byte
 	for i := 1; i <= TestBatchSize; i++ {
 		msg = []byte(fmt.Sprintf("testing %d", i))
 		n, err := producer.Write(msg)
+
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -96,9 +103,8 @@ func TestUnsafeWriterFunctional(t *testing.T) {
 
 }
 
-func TestSyncWriterFunctional(t *testing.T) {
-
-	checkKafkaAvailability(t)
+func TestFuncSyncWriter(t *testing.T) {
+	pc := NewProducerConfig()
 	defer LogTo(os.Stderr)()
 	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
 	if err != nil {
@@ -106,46 +112,12 @@ func TestSyncWriterFunctional(t *testing.T) {
 	}
 	defer client.Close()
 
-	consumerConfig := NewConsumerConfig()
-	consumerConfig.OffsetMethod = OffsetMethodNewest
-
-	consumer, err := NewConsumer(client, "single_partition", 0, "functional_test", consumerConfig)
+	pc.FlushFrequency = 100 * time.Millisecond
+	producer, err := client.NewSyncWriter("single_partition", pc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer consumer.Close()
-
-	producer, err := client.NewSyncWriter("single_partition", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var msg []byte
-	for i := 1; i <= TestBatchSize; i++ {
-		msg = []byte(fmt.Sprintf("testing %d", i))
-		n, err := producer.Write(msg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if n != len(msg) {
-			t.Fatal("Wrote", n, "bytes, expected", len(msg))
-		}
-	}
-	producer.Close()
-
-	events := consumer.Events()
-	for i := 1; i <= TestBatchSize; i++ {
-		select {
-		case <-time.After(10 * time.Second):
-			t.Fatal("Not received any more events in the last 10 seconds.")
-
-		case event := <-events:
-			if string(event.Value) != fmt.Sprintf("testing %d", i) {
-				t.Fatalf("Unexpected message with index %d: %s", i, event.Value)
-			}
-		}
-
-	}
-
+	testWriter(client, producer, t)
 }
 
 func TestFuncProducing(t *testing.T) {
