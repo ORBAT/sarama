@@ -54,22 +54,6 @@ func newParallelProdConf() *ProducerConfig {
 	return pc
 }
 
-func TestFuncQueuingWriterAltParallel(t *testing.T) {
-	pc := newParallelProdConf()
-	defer LogTo(os.Stderr)()
-	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	producer, err := client.NewQueuingWriterAlt("single_partition", pc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	testWriterParallel(client, producer, pc, 100, t)
-}
-
 func TestFuncQueuingWriterParallel(t *testing.T) {
 	pc := newParallelProdConf()
 	defer LogTo(os.Stderr)()
@@ -86,7 +70,7 @@ func TestFuncQueuingWriterParallel(t *testing.T) {
 	testWriterParallel(client, producer, pc, 100, t)
 }
 
-func TestFuncQueuingWriterSync(t *testing.T) {
+func TestFuncQueuingWriterSingle(t *testing.T) {
 	pc := NewProducerConfig()
 
 	defer LogTo(os.Stderr)()
@@ -101,6 +85,22 @@ func TestFuncQueuingWriterSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	testWriter(client, producer, t)
+}
+
+func TestSyncWriterParallel(t *testing.T) {
+	pc := newParallelProdConf()
+	defer LogTo(os.Stderr)()
+	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	producer, err := client.NewSyncWriter("single_partition", pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testWriterParallel(client, producer, pc, 100, t)
 }
 
 func TestFuncUnsafeWriterParallel(t *testing.T) {
@@ -119,7 +119,7 @@ func TestFuncUnsafeWriterParallel(t *testing.T) {
 	testWriterParallel(client, producer, pc, 100, t)
 }
 
-func TestFuncUnsafeWriterSync(t *testing.T) {
+func TestFuncUnsafeWriterSingle(t *testing.T) {
 	pc := NewProducerConfig()
 	defer LogTo(os.Stderr)()
 	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)

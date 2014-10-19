@@ -4,13 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"runtime"
 	"sync"
 	"syscall"
 )
 
 // BUG(ORBAT): QueuingWriter seems to deadlock the producer if more than ChannelBufferSize concurrent Write()s are done. This can be,
-// at least temporarily, handled by using a chan with a buffer of ChannelBufferSize-1 as a concurrency limiter.
+// at least temporarily, handled by using CountingSemaphore
 
 // QueuingWriter is an io.Writer that writes messages to Kafka. Parallel calls to Write() will cause messages to be queued by the producer.
 // Each Write() call will block until a response is received. The number of concurrent writes is limited by ChannelBufferSize
@@ -22,13 +21,9 @@ type QueuingWriter struct {
 	log      *log.Logger
 	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseBoth()
 	CloseClient bool
-
-	// latestMsg is the latest response received from the broker
-	latestMsg *ProduceError
-	// latestMut is the mutex for latestMsg
-	latestMut sync.Mutex
-	// recvCond is the condition Write() waits on
-	recvCond *sync.Cond
+	// mut is the mutex for chanForMsg
+	mut        sync.RWMutex
+	chanForMsg map[*MessageToSend]chan *ProduceError
 	// sem limits the number of concurrent calls to ChannelBufferSize-1
 	sem *CountingSemaphore
 }
@@ -37,10 +32,15 @@ func (kp *Producer) NewQueuingWriter(topic string) (p *QueuingWriter, err error)
 	if !kp.config.AckSuccesses {
 		return nil, errors.New("AckSuccesses was false")
 	}
-	id := "queuingw-" + TimestampRandom()
-	pl := NewLogger(fmt.Sprintf("QueuingWr %s -> %s", id, topic), nil)
-	p = &QueuingWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: make(chan struct{}), sem: NewCountingSemaphore(kp.config.ChannelBufferSize - 1)}
-	p.recvCond = sync.NewCond(&p.latestMut)
+	id := "qwalt-" + TimestampRandom()
+	pl := NewLogger(fmt.Sprintf("QueuingWrAlt %s -> %s", id, topic), nil)
+	p = &QueuingWriter{kp: kp,
+		id:         id,
+		topic:      topic,
+		log:        pl,
+		closedCh:   make(chan struct{}),
+		chanForMsg: make(map[*MessageToSend]chan *ProduceError),
+		sem:        NewCountingSemaphore(kp.config.ChannelBufferSize - 1)}
 
 	go func(p *QueuingWriter) {
 		errCh := p.kp.Errors()
@@ -60,13 +60,17 @@ func (kp *Producer) NewQueuingWriter(topic string) (p *QueuingWriter, err error)
 				if perr.Err != nil {
 					p.log.Println("Got error from Kafka:", err)
 				}
-
-				p.latestMut.Lock()
-				p.latestMsg = perr
-				p.recvCond.Broadcast()
-				p.latestMut.Unlock()
-				// allow other goroutines to run so this one doesn't trample p.latestMsg
-				runtime.Gosched()
+				// p.log.Printf("Received %p", perr.Msg)
+				p.mut.RLock()
+				receiver, ok := p.chanForMsg[perr.Msg]
+				p.mut.RUnlock()
+				if !ok {
+					p.log.Panicf("Nobody wanted *MessageToSend %p?", perr.Msg)
+				} else {
+					receiver <- perr
+				}
+				// allow other goroutines to run
+				// runtime.Gosched()
 			}
 		}
 	}(p)
@@ -75,6 +79,7 @@ func (kp *Producer) NewQueuingWriter(topic string) (p *QueuingWriter, err error)
 }
 
 func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *QueuingWriter, err error) {
+
 	if config == nil {
 		config = NewProducerConfig()
 	}
@@ -90,18 +95,6 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 	return kp.NewQueuingWriter(topic)
 }
 
-var sequentialInts chan int = make(chan int, 20)
-
-func init() {
-	i := 0
-	go func() {
-		for {
-			sequentialInts <- i
-			i++
-		}
-	}()
-}
-
 // Write will queue p as a single message, blocking until a response is received.
 // It is safe to call Write in parallel. The number of inflight parallel calls to Write is
 // limited by the underlying Producer's ChannelBufferSize; if it is 0, QueuingWriter will
@@ -112,24 +105,30 @@ func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 	n = len(p)
 	qw.sem.Acquire()
 	defer qw.sem.Release()
-	// counter := <-sequentialInts
+	// counter := qw.sem.Count()
 	msg := &MessageToSend{Topic: qw.topic, Key: nil, Value: ByteEncoder(p)}
+	responseCh := make(chan *ProduceError, 1)
 
+	defer func() {
+		qw.mut.Lock()
+		close(responseCh)
+		delete(qw.chanForMsg, msg)
+		qw.mut.Unlock()
+	}()
+
+	qw.mut.Lock()
+	qw.chanForMsg[msg] = responseCh
+	qw.mut.Unlock()
 	qw.kp.Input() <- msg
 
-	qw.latestMut.Lock()
-
-	// wait until latestMsg contains the message we sent
-	for qw.latestMsg == nil || qw.latestMsg.Msg != msg {
-		qw.recvCond.Wait()
+	select {
+	case resp := <-responseCh:
+		if resp.Err != nil {
+			err = resp.Err
+			n = 0
+		}
 	}
-	defer qw.latestMut.Unlock()
 
-	if qw.latestMsg.Err != nil {
-		err = qw.latestMsg.Err
-		n = 0
-	}
-	qw.latestMsg = nil
 	return
 }
 
@@ -173,11 +172,12 @@ func (qw *QueuingWriter) Close() error {
 	if qw.Closed() {
 		return syscall.EINVAL
 	}
-	// TODO(ORBAT): handle all inflight Write()s in the event of a close
+
 	qw.log.Printf("Closing producer. CloseClient = %t", qw.CloseClient)
 	if qw.CloseClient == true {
 		return qw.CloseBoth()
 	}
+	// TODO(ORBAT): handle all inflight Write()s in the event of a close
 	defer close(qw.closedCh)
 	return qw.kp.Close()
 }
