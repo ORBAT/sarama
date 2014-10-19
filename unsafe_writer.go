@@ -8,8 +8,10 @@ import (
 	"syscall"
 )
 
+// BUG(ORBAT): None of the Writers handles Close() gracefully.
+
 // BUG(ORBAT): UnsafeWriter seems to deadlock the producer if more than ChannelBufferSize concurrent Write()s are done. This can be,
-// at least temporarily, handled by using a chan with a buffer of ChannelBufferSize-1 as a concurrency limiter.
+// at least temporarily, handled by using CountingSemaphore
 
 // UnsafeWriter is an io.Writer that writes messages to Kafka, ignoring any error responses sent by the brokers. Parallel calls to Write are safe,
 // but they are limited by the underlying Producer's ChannelBufferSize.
