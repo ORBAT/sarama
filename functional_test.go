@@ -47,11 +47,27 @@ func checkKafkaAvailability(t *testing.T) {
 
 func newParallelProdConf() *ProducerConfig {
 	pc := NewProducerConfig()
-	pc.FlushFrequency = 500 * time.Millisecond
+	pc.FlushFrequency = 50 * time.Millisecond
 	pc.FlushByteCount = 800000
-	pc.FlushMsgCount = 50
+	pc.FlushMsgCount = 200
 	pc.ChannelBufferSize = 20
 	return pc
+}
+
+func TestFuncQueuingWriterAltParallel(t *testing.T) {
+	pc := newParallelProdConf()
+	defer LogTo(os.Stderr)()
+	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	producer, err := client.NewQueuingWriterAlt("single_partition", pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testWriterParallel(client, producer, pc, 100, t)
 }
 
 func TestFuncQueuingWriterParallel(t *testing.T) {
@@ -67,7 +83,7 @@ func TestFuncQueuingWriterParallel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testWriterParallel(client, producer, pc, t)
+	testWriterParallel(client, producer, pc, 100, t)
 }
 
 func TestFuncQueuingWriterSync(t *testing.T) {
@@ -100,7 +116,7 @@ func TestFuncUnsafeWriterParallel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testWriterParallel(client, producer, pc, t)
+	testWriterParallel(client, producer, pc, 100, t)
 }
 
 func TestFuncUnsafeWriterSync(t *testing.T) {
@@ -161,8 +177,26 @@ func testWriter(client *Client, producer io.WriteCloser, t *testing.T) {
 	}
 }
 
-func testWriterParallel(client *Client, producer io.WriteCloser, conf *ProducerConfig, t *testing.T) {
-	batchSize := conf.ChannelBufferSize
+func writeInParallel(w io.Writer, batchSize int, t *testing.T) *sync.WaitGroup {
+	var wg sync.WaitGroup
+	wg.Add(batchSize)
+	for i := 0; i < batchSize; i++ {
+		go func(i int, wg *sync.WaitGroup) {
+			defer wg.Done()
+			msg := []byte(fmt.Sprintf("%d", i))
+			n, err := w.Write(msg)
+			if err != nil {
+				t.Error("Write error", err)
+			}
+			if n != len(msg) {
+				t.Error("Wrote", n, "bytes, expected", len(msg))
+			}
+		}(i, &wg)
+	}
+	return &wg
+}
+
+func testWriterParallel(client *Client, w io.WriteCloser, conf *ProducerConfig, batchSize int, t *testing.T) {
 	checkKafkaAvailability(t)
 
 	consumerConfig := NewConsumerConfig()
@@ -173,24 +207,10 @@ func testWriterParallel(client *Client, producer io.WriteCloser, conf *ProducerC
 		t.Fatal(err)
 	}
 	defer consumer.Close()
-	var wg sync.WaitGroup
-	wg.Add(batchSize)
-	for i := 0; i < batchSize; i++ {
-		go func(i int, wg *sync.WaitGroup) {
-			defer wg.Done()
 
-			msg := []byte(fmt.Sprintf("%d", i))
-			n, err := producer.Write(msg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if n != len(msg) {
-				t.Fatal("Wrote", n, "bytes, expected", len(msg))
-			}
-		}(i, &wg)
-	}
-	wg.Wait()
-	defer producer.Close()
+	writeInParallel(w, batchSize, t).Wait()
+
+	defer w.Close()
 	recvd := make([]*ConsumerEvent, batchSize)
 	events := consumer.Events()
 	for i := 0; i < batchSize; i++ {
@@ -209,7 +229,7 @@ func testWriterParallel(client *Client, producer io.WriteCloser, conf *ProducerC
 	}
 
 	for idx, val := range recvd {
-		t.Logf("recvd[%d] = %s", idx, string(recvd[idx].Value))
+		// t.Logf("recvd[%d] = %s", idx, string(recvd[idx].Value))
 		if val == nil {
 			t.Errorf("Never got a message with the number %d", idx)
 		}
@@ -226,11 +246,11 @@ func TestFuncSyncWriter(t *testing.T) {
 	}
 	defer client.Close()
 
-	producer, err := client.NewSyncWriter("single_partition", pc)
+	w, err := client.NewSyncWriter("single_partition", pc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	testWriter(client, producer, t)
+	testWriter(client, w, t)
 }
 
 func TestFuncProducing(t *testing.T) {
