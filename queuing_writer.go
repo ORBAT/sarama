@@ -1,13 +1,15 @@
 package sarama
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"syscall"
 )
 
-// QueuingWriter is an io.Writer that writes messages to Kafka. Parallel calls to Write() will cause messages to be queued by the producer
+// QueuingWriter is an io.Writer that writes messages to Kafka. Parallel calls to Write() will cause messages to be queued by the producer.
+// Each Write() call will block until a response is received.
 type QueuingWriter struct {
 	kp       *Producer
 	id       string
@@ -19,36 +21,26 @@ type QueuingWriter struct {
 	latestMsg   *ProduceError
 	// mutex for latestMsg
 	latestMut sync.Mutex
-	recvCond  sync.Cond
+	recvCond  *sync.Cond
 }
 
-func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *QueuingWriter, err error) {
+func (kp *Producer) NewQueuingWriter(topic string) (p *QueuingWriter, err error) {
+	if !kp.config.AckSuccesses {
+		return nil, errors.New("AckSuccesses was false")
+	}
+
 	id := "queuingw-" + TimestampRandom()
 	pl := NewLogger(fmt.Sprintf("QueuingWr %s -> %s", id, topic), nil)
-
-	pl.Println("Creating producer")
-
-	if config == nil {
-		config = NewProducerConfig()
-
-	}
-
-	config.AckSuccesses = true
-
-	kp, err := NewProducer(c, config)
-	if err != nil {
-		return nil, err
-	}
-
 	p = &QueuingWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: make(chan struct{})}
+	p.recvCond = sync.NewCond(&p.latestMut)
 
-	go func(p *QueuingWriter) {
-		errCh := kp.Errors()
-		p.log.Println("Starting error listener")
+	go func(p *QueuingWriter, errCh <-chan *ProduceError) {
+		// errCh := kp.Errors()
+		p.log.Println("Starting response listener")
 		for {
 			select {
 			case <-p.closedCh:
-				p.log.Println("Closing error listener")
+				p.log.Println("Closing response listener")
 				return
 			case perr, ok := <-errCh:
 				if !ok {
@@ -56,40 +48,75 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 					close(p.closedCh)
 					return
 				}
-
+				p.log.Printf("Received %p", perr.Msg)
 				if perr.Err != nil {
 					p.log.Println("Got error from Kafka:", err)
 				}
 
 				p.latestMut.Lock()
-				defer p.latestMut.Unlock()
-				p.log.Printf("Received response %#v", perr)
 				p.latestMsg = perr
 				p.recvCond.Broadcast()
+				p.latestMut.Unlock()
+				p.log.Println("Broadcasted")
 			}
 		}
-	}(p)
+	}(p, kp.Errors())
 
-	p.recvCond.L = &p.latestMut
 	return
+}
+
+func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *QueuingWriter, err error) {
+
+	if config == nil {
+		config = NewProducerConfig()
+	}
+
+	config.AckSuccesses = true
+	config.FlushMsgCount = 5
+
+	kp, err := NewProducer(c, config)
+	if err != nil {
+		return nil, err
+	}
+
+	return kp.NewQueuingWriter(topic)
+}
+
+var nums chan int = make(chan int, 20)
+
+func init() {
+	i := 0
+	go func() {
+		for {
+			nums <- i
+			i++
+		}
+	}()
 }
 
 func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 	n = len(p)
+	counter := <-nums
 	msg := &MessageToSend{Topic: qw.topic, Key: nil, Value: ByteEncoder(p)}
+	qw.log.Printf("#%d *MessageToSend %p", counter, msg)
 	qw.kp.Input() <- msg
+	qw.log.Printf("#%d sent", counter)
 	qw.latestMut.Lock()
-
+	qw.log.Printf("#%d going into wait loop", counter)
 	for qw.latestMsg == nil || qw.latestMsg.Msg != msg {
 		qw.recvCond.Wait()
+		if qw.latestMsg != nil {
+			qw.log.Printf("#%d waited for %p, latest %p", counter, msg, qw.latestMsg.Msg)
+		}
 	}
+	qw.log.Printf("#%d got response %p", counter, qw.latestMsg.Msg)
 	defer qw.latestMut.Unlock()
 
 	if qw.latestMsg.Err != nil {
 		err = qw.latestMsg.Err
 		n = 0
 	}
-
+	qw.latestMsg = nil
 	return
 }
 
