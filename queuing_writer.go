@@ -48,7 +48,6 @@ func (kp *Producer) NewQueuingWriter(topic string) (p *QueuingWriter, err error)
 					close(p.closedCh)
 					return
 				}
-				p.log.Printf("Received %p", perr.Msg)
 				if perr.Err != nil {
 					p.log.Println("Got error from Kafka:", err)
 				}
@@ -57,7 +56,6 @@ func (kp *Producer) NewQueuingWriter(topic string) (p *QueuingWriter, err error)
 				p.latestMsg = perr
 				p.recvCond.Broadcast()
 				p.latestMut.Unlock()
-				p.log.Println("Broadcasted")
 			}
 		}
 	}(p, kp.Errors())
@@ -96,20 +94,13 @@ func init() {
 
 func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 	n = len(p)
-	counter := <-nums
+	// counter := <-nums
 	msg := &MessageToSend{Topic: qw.topic, Key: nil, Value: ByteEncoder(p)}
-	qw.log.Printf("#%d *MessageToSend %p", counter, msg)
 	qw.kp.Input() <- msg
-	qw.log.Printf("#%d sent", counter)
 	qw.latestMut.Lock()
-	qw.log.Printf("#%d going into wait loop", counter)
 	for qw.latestMsg == nil || qw.latestMsg.Msg != msg {
 		qw.recvCond.Wait()
-		if qw.latestMsg != nil {
-			qw.log.Printf("#%d waited for %p, latest %p", counter, msg, qw.latestMsg.Msg)
-		}
 	}
-	qw.log.Printf("#%d got response %p", counter, qw.latestMsg.Msg)
 	defer qw.latestMut.Unlock()
 
 	if qw.latestMsg.Err != nil {
