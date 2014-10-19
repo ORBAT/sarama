@@ -9,7 +9,7 @@ import (
 )
 
 // SyncWriter is an io.Writer that writes messages to Kafka. Writes are done synchronously and every written []byte is
-// one Kafka message.
+// one Kafka message. Calling Write in parallel is safe.
 //
 // Close() must be called when the producer is no longer needed.
 type SyncWriter struct {
@@ -20,6 +20,8 @@ type SyncWriter struct {
 	log      *log.Logger
 	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseBoth()
 	CloseClient bool
+	// sem limits the number of concurrent calls to 1
+	sem *CountingSemaphore
 }
 
 // NewSyncWriter returns a new SyncWriter.
@@ -37,13 +39,19 @@ func (c *Client) NewSyncWriter(topic string, config *ProducerConfig) (p *SyncWri
 
 	config.AckSuccesses = true
 	config.FlushMsgCount = 1
+
 	kp, err := NewProducer(c, config)
 
 	if err != nil {
 		return nil, err
 	}
 
-	p = &SyncWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: make(chan struct{})}
+	p = &SyncWriter{kp: kp,
+		id:       id,
+		topic:    topic,
+		log:      pl,
+		closedCh: make(chan struct{}),
+		sem:      NewCountingSemaphore(1)}
 	return
 }
 
@@ -72,12 +80,15 @@ func (k *SyncWriter) ReadFrom(r io.Reader) (n int64, err error) {
 }
 
 // Write writes byte slices to Kafka, blocking until the write has been acknowledged. Each written slice is sent out as a single message, with no
-// message batching.
+// message batching. Calling Write in parallel is safe.
 //
 // n is len(p) if the send succeeds and 0 in case of errors.
 func (k *SyncWriter) Write(p []byte) (n int, err error) {
+	k.sem.Acquire()
+	defer k.sem.Release()
 	n = len(p)
 	k.kp.Input() <- &MessageToSend{Topic: k.topic, Key: nil, Value: ByteEncoder(p)}
+
 	perr := <-k.kp.Errors()
 
 	if perr.Err != nil {
