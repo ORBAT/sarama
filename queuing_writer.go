@@ -3,6 +3,8 @@ package sarama
 import (
 	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
 	"sync"
 	"syscall"
@@ -130,6 +132,17 @@ func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 	}
 
 	return
+}
+
+// ReadFrom reads all available bytes from r and writes them to Kafka in a single message. Implements io.ReaderFrom.
+func (qw *QueuingWriter) ReadFrom(r io.Reader) (n int64, err error) {
+	p, err := ioutil.ReadAll(r)
+	if err != nil {
+		return 0, err
+	}
+
+	ni, err := qw.Write(p)
+	return int64(ni), err
 }
 
 func (qw *QueuingWriter) Closed() (closed bool) {
