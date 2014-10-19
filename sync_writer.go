@@ -18,7 +18,7 @@ type SyncWriter struct {
 	topic    string
 	closedCh chan struct{}
 	log      *log.Logger
-	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseBoth()
+	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseAll()
 	CloseClient bool
 	// sem limits the number of concurrent calls to 1
 	sem *CountingSemaphore
@@ -101,9 +101,9 @@ func (k *SyncWriter) Closed() (closed bool) {
 	return
 }
 
-// CloseBoth closes the SyncWriter and the client. Returns syscall.EINVAL if the producer is already closed, and an error of type *MultiError if one or both of
+// CloseAll closes the SyncWriter and the client. Returns syscall.EINVAL if the producer is already closed, and an error of type *MultiError if one or both of
 // Producer#Close() and Client#Close() returns an error.
-func (k *SyncWriter) CloseBoth() (err error) {
+func (k *SyncWriter) CloseAll() (err error) {
 	if k.Closed() {
 		return syscall.EINVAL
 	}
@@ -140,7 +140,7 @@ func (k *SyncWriter) CloseWait() {
 	<-k.closedCh
 }
 
-// Close closes the SyncWriter. If k.CloseClient is true, the client will be closed as well (basically turning Close() into CloseBoth().)
+// Close closes the SyncWriter. If k.CloseClient is true, the client will be closed as well (basically turning Close() into CloseAll().)
 // If the SyncWriter has already been closed, Close() will return syscall.EINVAL.
 func (k *SyncWriter) Close() error {
 	if k.Closed() {
@@ -149,7 +149,7 @@ func (k *SyncWriter) Close() error {
 
 	k.log.Printf("Closing producer. CloseClient = %t", k.CloseClient)
 	if k.CloseClient == true {
-		return k.CloseBoth()
+		return k.CloseAll()
 	}
 	defer close(k.closedCh)
 	return k.kp.Close()

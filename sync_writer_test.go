@@ -12,12 +12,12 @@ var clusterZk = []string{"localhost:22181", "localhost:22182"}
 var singleZk = []string{"localhost:2181"}
 var singleBroker = []string{"localhost:9092"}
 
-type BothCloser interface {
-	CloseBoth() error
+type AllCloser interface {
+	CloseAll() error
 }
 
-func safeCloseBoth(bc BothCloser) {
-	if err := bc.CloseBoth(); err != nil {
+func safeCloseAll(bc AllCloser) {
+	if err := bc.CloseAll(); err != nil {
 		panic(err)
 	}
 }
@@ -135,7 +135,7 @@ func TestSyncWriterOneInstance(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	defer safeCloseBoth(kp)
+	defer safeCloseAll(kp)
 
 	for i := 0; i < 10; i++ {
 		n, err := kp.Write([]byte{1, 2, 3, 4})
@@ -161,7 +161,7 @@ func BenchmarkKafkaProdNoCompressionCluster(b *testing.B) {
 	for i := range testMsg {
 		testMsg[i] = byte(i)
 	}
-	defer safeCloseBoth(kp)
+	defer safeCloseAll(kp)
 	b.Log("Client created")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -181,7 +181,7 @@ func BenchmarkKafkaProdNoCompressionSingle(b *testing.B) {
 	for i := range testMsg {
 		testMsg[i] = byte(i)
 	}
-	defer safeCloseBoth(kp)
+	defer safeCloseAll(kp)
 	b.Log("Client created")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

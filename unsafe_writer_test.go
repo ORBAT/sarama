@@ -128,7 +128,7 @@ func TestUnsafeWriterOneInstance(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	defer safeCloseBoth(kp)
+	defer safeCloseAll(kp)
 
 	for i := 0; i < 10; i++ {
 		n, err := kp.Write([]byte(TestMessage))
@@ -156,7 +156,7 @@ func BenchmarkKafkaUnsafeProdNoCompressionCluster(b *testing.B) {
 	for i := range testMsg {
 		testMsg[i] = byte(i)
 	}
-	defer safeCloseBoth(kp)
+	defer safeCloseAll(kp)
 	b.Log("Client created")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -176,7 +176,7 @@ func BenchmarkKafkaUnsafeProdNoCompressionSingle(b *testing.B) {
 	for i := range testMsg {
 		testMsg[i] = byte(i)
 	}
-	defer safeCloseBoth(kp)
+	defer safeCloseAll(kp)
 	b.Log("Client created")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

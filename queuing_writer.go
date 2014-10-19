@@ -20,7 +20,7 @@ type QueuingWriter struct {
 	topic    string
 	closedCh chan struct{}
 	log      *log.Logger
-	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseBoth()
+	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseAll()
 	CloseClient bool
 	// mut is the mutex for chanForMsg
 	mut        sync.RWMutex
@@ -150,7 +150,7 @@ func (qw *QueuingWriter) Closed() (closed bool) {
 	return
 }
 
-func (qw *QueuingWriter) CloseBoth() (err error) {
+func (qw *QueuingWriter) CloseAll() (err error) {
 	if qw.Closed() {
 		return syscall.EINVAL
 	}
@@ -184,7 +184,7 @@ func (qw *QueuingWriter) Close() error {
 
 	qw.log.Printf("Closing producer. CloseClient = %t", qw.CloseClient)
 	if qw.CloseClient == true {
-		return qw.CloseBoth()
+		return qw.CloseAll()
 	}
 	// TODO(ORBAT): handle all inflight Write()s in the event of a close
 	defer close(qw.closedCh)

@@ -24,7 +24,7 @@ type UnsafeWriter struct {
 	closed   bool
 	closedCh chan struct{}
 	log      *log.Logger
-	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseBoth()
+	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseAll()
 	CloseClient bool
 	// sem limits the number of concurrent calls to ChannelBufferSize-1
 	sem *CountingSemaphore
@@ -122,9 +122,9 @@ func (k *UnsafeWriter) Closed() (closed bool) {
 	return
 }
 
-// CloseBoth closes the UnsafeWriter and the client. Returns syscall.EINVAL if the producer is already closed, and an error of type *MultiError if one or both of
+// CloseAll closes the UnsafeWriter and the client. Returns syscall.EINVAL if the producer is already closed, and an error of type *MultiError if one or both of
 // Producer#Close() and Client#Close() returns an error.
-func (k *UnsafeWriter) CloseBoth() (err error) {
+func (k *UnsafeWriter) CloseAll() (err error) {
 	if k.Closed() {
 		return syscall.EINVAL
 	}
@@ -161,7 +161,7 @@ func (k *UnsafeWriter) CloseWait() {
 	<-k.closedCh
 }
 
-// Close closes the UnsafeWriter. If k.CloseClient is true, the client will be closed as well (basically turning Close() into CloseBoth().)
+// Close closes the UnsafeWriter. If k.CloseClient is true, the client will be closed as well (basically turning Close() into CloseAll().)
 // If the UnsafeWriter has already been closed, Close() will return syscall.EINVAL.
 func (k *UnsafeWriter) Close() error {
 	if k.Closed() {
@@ -170,7 +170,7 @@ func (k *UnsafeWriter) Close() error {
 
 	k.log.Printf("Closing producer. CloseClient = %t", k.CloseClient)
 	if k.CloseClient == true {
-		return k.CloseBoth()
+		return k.CloseAll()
 	}
 	defer close(k.closedCh)
 	return k.kp.Close()
