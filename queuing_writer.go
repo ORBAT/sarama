@@ -1,7 +1,6 @@
 package sarama
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -30,12 +29,26 @@ type QueuingWriter struct {
 	sem *CountingSemaphore
 }
 
-func (kp *Producer) NewQueuingWriter(topic string) (p *QueuingWriter, err error) {
-	if !kp.config.AckSuccesses {
-		return nil, errors.New("AckSuccesses was false")
+// DefaultChanBufferSize is the default ChannelBufferSize to use when NewQueuingWriter is called with a nil config.
+var DefaultChanBufferSize = 20
+
+// NewQueuingWriter creates a new Producer for the client and returns a QueuingWriter for that Producer. If a nil *ProducerConfig is given, default configuration will be used
+// and ChannelBufferSize will be set to DefaultChanBufferSize.
+func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *QueuingWriter, err error) {
+
+	if config == nil {
+		config = NewProducerConfig()
+		config.ChannelBufferSize = DefaultChanBufferSize
 	}
-	id := "qwalt-" + TimestampRandom()
-	pl := NewLogger(fmt.Sprintf("QueuingWrAlt %s -> %s", id, topic), nil)
+
+	config.AckSuccesses = true
+
+	kp, err := NewProducer(c, config)
+	if err != nil {
+		return nil, err
+	}
+	id := "qw-" + TimestampRandom()
+	pl := NewLogger(fmt.Sprintf("QueuingWr %s -> %s", id, topic), nil)
 	p = &QueuingWriter{kp: kp,
 		id:         id,
 		topic:      topic,
@@ -78,23 +91,6 @@ func (kp *Producer) NewQueuingWriter(topic string) (p *QueuingWriter, err error)
 	}(p)
 
 	return
-}
-
-func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *QueuingWriter, err error) {
-
-	if config == nil {
-		config = NewProducerConfig()
-	}
-
-	config.ChannelBufferSize = 10
-	config.AckSuccesses = true
-
-	kp, err := NewProducer(c, config)
-	if err != nil {
-		return nil, err
-	}
-
-	return kp.NewQueuingWriter(topic)
 }
 
 // Write will queue p as a single message, blocking until a response is received.
