@@ -3,8 +3,11 @@ package sarama
 import (
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 )
@@ -43,7 +46,24 @@ func checkKafkaAvailability(t *testing.T) {
 	}
 }
 
-func TestFuncQueuingWriter(t *testing.T) {
+func TestFuncQueuingWriterParallel(t *testing.T) {
+	pc := NewProducerConfig()
+	defer LogTo(os.Stderr)()
+	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	pc.FlushFrequency = 100 * time.Millisecond
+	producer, err := client.NewQueuingWriter("single_partition", pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testWriterParallel(client, producer, t)
+}
+
+func TestFuncQueuingWriterSync(t *testing.T) {
 	pc := NewProducerConfig()
 	defer LogTo(os.Stderr)()
 	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
@@ -60,7 +80,24 @@ func TestFuncQueuingWriter(t *testing.T) {
 	testWriter(client, producer, t)
 }
 
-func TestFuncUnsafeWriter(t *testing.T) {
+func TestFuncUnsafeWriterParallel(t *testing.T) {
+	pc := NewProducerConfig()
+	defer LogTo(os.Stderr)()
+	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	pc.FlushFrequency = 100 * time.Millisecond
+	producer, err := client.NewUnsafeWriter("single_partition", pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	testWriterParallel(client, producer, t)
+}
+
+func TestFuncUnsafeWriterSync(t *testing.T) {
 	pc := NewProducerConfig()
 	defer LogTo(os.Stderr)()
 	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
@@ -117,7 +154,67 @@ func testWriter(client *Client, producer io.WriteCloser, t *testing.T) {
 		}
 
 	}
+}
 
+func testWriterParallel(client *Client, producer io.WriteCloser, t *testing.T) {
+	batchSize := 3
+	checkKafkaAvailability(t)
+
+	consumerConfig := NewConsumerConfig()
+	consumerConfig.OffsetMethod = OffsetMethodNewest
+
+	consumer, err := NewConsumer(client, "single_partition", 0, "functional_test", consumerConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer consumer.Close()
+	var wg sync.WaitGroup
+	wg.Add(batchSize)
+	log.Println("added", batchSize)
+	for i := 0; i < batchSize; i++ {
+		go func(i int, wg *sync.WaitGroup) {
+			log.Println(i, "writing")
+			defer func() {
+				log.Println(i, "done")
+				wg.Done()
+			}()
+
+			msg := []byte(fmt.Sprintf("%d", i))
+			n, err := producer.Write(msg)
+
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n != len(msg) {
+				t.Fatal("Wrote", n, "bytes, expected", len(msg))
+			}
+		}(i, &wg)
+	}
+	wg.Wait()
+	producer.Close()
+	recvd := make([]*ConsumerEvent, batchSize)
+	events := consumer.Events()
+	for i := 0; i < batchSize; i++ {
+		select {
+		case <-time.After(10 * time.Second):
+			t.Fatal("Not received any more events in the last 10 seconds.")
+
+		case event := <-events:
+			idx, err := strconv.Atoi(string(event.Value))
+			if err != nil {
+				t.Fatalf("Expected a string with a number, got %#v (%s). Error was %s", event.Value, string(event.Value), err.Error())
+			}
+			recvd[idx] = event
+		}
+
+	}
+
+	for idx, val := range recvd {
+		t.Logf("recvd[%d] = %#v", idx, recvd[idx])
+		if val == nil {
+			t.Errorf("Never got a message with the number %d", idx)
+		}
+	}
 }
 
 func TestFuncSyncWriter(t *testing.T) {
