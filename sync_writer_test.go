@@ -127,8 +127,11 @@ func TestSyncWriterOneInstance(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		mb2.Returns(pr)
 	}
-
-	kp, err := NewSyncWriter("testid2", "test-topic", []string{mb1.Addr()}, nil, nil)
+	kc, err := NewClient("testid2", []string{mb1.Addr()}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, err := kc.NewSyncWriter("test-topic", nil)
 	if err != nil {
 		panic(err)
 	}

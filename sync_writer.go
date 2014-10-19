@@ -55,19 +55,6 @@ func (c *Client) NewSyncWriter(topic string, config *ProducerConfig) (p *SyncWri
 	return
 }
 
-// NewSyncWriter returns a new SyncWriter.
-
-// If either of the configs is nil, sarama default configuration will be used for the omitted config.
-func NewSyncWriter(clientId, topic string, brokers []string, pConfig *ProducerConfig, cConfig *ClientConfig) (p *SyncWriter, err error) {
-	kc, err := NewClient(clientId, brokers, cConfig)
-	if err != nil {
-		return
-	}
-
-	p, err = kc.NewSyncWriter(topic, pConfig)
-	return
-}
-
 // ReadFrom reads all available bytes from r and writes them to Kafka in a single message. Implements io.ReaderFrom.
 func (k *SyncWriter) ReadFrom(r io.Reader) (n int64, err error) {
 	p, err := ioutil.ReadAll(r)
