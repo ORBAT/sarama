@@ -9,6 +9,9 @@ import (
 	"syscall"
 )
 
+// BUG(ORBAT): QueuingWriter seems to deadlock the producer if more than ChannelBufferSize concurrent Write()s are done. This can be,
+// at least temporarily, handled by using a chan with a buffer of ChannelBufferSize-1 as a concurrency limiter.
+
 // QueuingWriter is an io.Writer that writes messages to Kafka. Parallel calls to Write() will cause messages to be queued by the producer.
 // Each Write() call will block until a response is received. The number of concurrent writes is limited by ChannelBufferSize
 type QueuingWriter struct {
@@ -26,6 +29,8 @@ type QueuingWriter struct {
 	latestMut sync.Mutex
 	// recvCond is the condition Write() waits on
 	recvCond *sync.Cond
+	// sem limits the number of concurrent calls to ChannelBufferSize-1
+	sem *CountingSemaphore
 }
 
 func (kp *Producer) NewQueuingWriter(topic string) (p *QueuingWriter, err error) {
@@ -34,7 +39,7 @@ func (kp *Producer) NewQueuingWriter(topic string) (p *QueuingWriter, err error)
 	}
 	id := "queuingw-" + TimestampRandom()
 	pl := NewLogger(fmt.Sprintf("QueuingWr %s -> %s", id, topic), nil)
-	p = &QueuingWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: make(chan struct{})}
+	p = &QueuingWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: make(chan struct{}), sem: NewCountingSemaphore(kp.config.ChannelBufferSize - 1)}
 	p.recvCond = sync.NewCond(&p.latestMut)
 
 	go func(p *QueuingWriter) {
@@ -44,6 +49,7 @@ func (kp *Producer) NewQueuingWriter(topic string) (p *QueuingWriter, err error)
 			select {
 			case <-p.closedCh:
 				p.log.Println("Closing response listener")
+				// TODO(ORBAT): handle all inflight Write()s in the event of a close
 				return
 			case perr, ok := <-errCh:
 				if !ok {
@@ -69,7 +75,6 @@ func (kp *Producer) NewQueuingWriter(topic string) (p *QueuingWriter, err error)
 }
 
 func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *QueuingWriter, err error) {
-
 	if config == nil {
 		config = NewProducerConfig()
 	}
@@ -85,21 +90,29 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 	return kp.NewQueuingWriter(topic)
 }
 
-var nums chan int = make(chan int, 20)
+var sequentialInts chan int = make(chan int, 20)
 
 func init() {
 	i := 0
 	go func() {
 		for {
-			nums <- i
+			sequentialInts <- i
 			i++
 		}
 	}()
 }
 
+// Write will queue p as a single message, blocking until a response is received.
+// It is safe to call Write in parallel. The number of inflight parallel calls to Write is
+// limited by the underlying Producer's ChannelBufferSize; if it is 0, QueuingWriter will
+// in effect function synchronously.
+//
+// n will always be len(p) if the message was sent successfully, 0 otherwise.
 func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 	n = len(p)
-	// counter := <-nums
+	qw.sem.Acquire()
+	defer qw.sem.Release()
+	// counter := <-sequentialInts
 	msg := &MessageToSend{Topic: qw.topic, Key: nil, Value: ByteEncoder(p)}
 
 	qw.kp.Input() <- msg
@@ -160,7 +173,7 @@ func (qw *QueuingWriter) Close() error {
 	if qw.Closed() {
 		return syscall.EINVAL
 	}
-
+	// TODO(ORBAT): handle all inflight Write()s in the event of a close
 	qw.log.Printf("Closing producer. CloseClient = %t", qw.CloseClient)
 	if qw.CloseClient == true {
 		return qw.CloseBoth()
