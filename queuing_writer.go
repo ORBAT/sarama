@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime"
 	"sync"
 	"syscall"
 )
@@ -56,6 +57,8 @@ func (kp *Producer) NewQueuingWriter(topic string) (p *QueuingWriter, err error)
 				p.latestMsg = perr
 				p.recvCond.Broadcast()
 				p.latestMut.Unlock()
+				// allow other goroutines to run so this one doesn't trample p.latestMsg
+				runtime.Gosched()
 			}
 		}
 	}(p, kp.Errors())
