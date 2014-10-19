@@ -8,7 +8,11 @@ import (
 	"syscall"
 )
 
-// UnsafeWriter is an io.Writer that writes messages to Kafka, ignoring any error responses sent by the brokers.
+// BUG(ORBAT): UnsafeWriter seems to deadlock the producer if more than ChannelBufferSize concurrent Write()s are done. This can be,
+// at least temporarily, handled by using a chan with a buffer of ChannelBufferSize-1 as a concurrency limiter.
+
+// UnsafeWriter is an io.Writer that writes messages to Kafka, ignoring any error responses sent by the brokers. Parallel calls to Write are safe,
+// but they are limited by the underlying Producer's ChannelBufferSize.
 //
 // Close() must be called when the writer is no longer needed.
 type UnsafeWriter struct {
@@ -20,6 +24,8 @@ type UnsafeWriter struct {
 	log      *log.Logger
 	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseBoth()
 	CloseClient bool
+	// sem limits the number of concurrent calls to ChannelBufferSize-1
+	sem *CountingSemaphore
 }
 
 // NewUnsafeWriter returns a new UnsafeWriter.
@@ -57,7 +63,7 @@ func (c *Client) NewUnsafeWriter(topic string, config *ProducerConfig) (p *Unsaf
 		}
 	}(kp.Errors(), closedCh, pl)
 
-	p = &UnsafeWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: closedCh}
+	p = &UnsafeWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: closedCh, sem: NewCountingSemaphore(kp.config.ChannelBufferSize - 1)}
 	return
 }
 
@@ -76,7 +82,7 @@ func NewUnsafeWriter(clientId, topic string, brokers []string, pConfig *Producer
 
 // ReadFrom reads all available bytes from r and writes them to Kafka without checking for broker error responses. The returned
 // error will be either nil or anything returned when reading from r. The returned int64 will always be the total length of bytes read from r,
-// or 0 if reading from r returned an error. Implements io.ReaderFrom
+// or 0 if reading from r returned an error. Implements io.ReaderFrom.
 //
 // Note that UnsafeWriter doesn't support "streaming", so r is read in full before it's sent.
 func (k *UnsafeWriter) ReadFrom(r io.Reader) (int64, error) {
@@ -88,8 +94,11 @@ func (k *UnsafeWriter) ReadFrom(r io.Reader) (int64, error) {
 	return int64(ni), nil
 }
 
-// Write writes byte slices to Kafka without checking for error responses. n will always be len(p) and err will be nil
+// Write writes byte slices to Kafka without checking for error responses. n will always be len(p) and err will be nil. The maximum number of parallel
+// Write calls is limited by the Producer's ChannelBufferSize
 func (k *UnsafeWriter) Write(p []byte) (n int, err error) {
+	k.sem.Acquire()
+	defer k.sem.Release()
 	n = len(p)
 	k.kp.Input() <- &MessageToSend{Topic: k.topic, Key: nil, Value: ByteEncoder(p)}
 
