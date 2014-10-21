@@ -12,8 +12,11 @@ import (
 // BUG(ORBAT): QueuingWriter seems to deadlock the producer if more than ChannelBufferSize concurrent Write()s are done. This can be,
 // at least temporarily, handled by using CountingSemaphore
 
-// QueuingWriter is an io.Writer that writes messages to Kafka. Parallel calls to Write() will cause messages to be queued by the producer.
-// Each Write() call will block until a response is received. The number of concurrent writes is limited by ChannelBufferSize
+// BUG(ORBAT): QueuingWriter's Close() doesn't wait for pending Write() calls to finish.
+
+// QueuingWriter is an io.Writer that writes messages to Kafka. Parallel calls to Write() will cause messages to be queued by the producer, and
+// each Write() call will block until a response is received. The number of concurrent writes is limited by the ChannelBufferSize of the underlying
+// Producer (see ProducerConfig for more details.)
 type QueuingWriter struct {
 	kp       *Producer
 	id       string
@@ -25,7 +28,7 @@ type QueuingWriter struct {
 	// mut is the mutex for chanForMsg
 	mut        sync.RWMutex
 	chanForMsg map[*MessageToSend]chan *ProduceError
-	// sem limits the number of concurrent calls to ChannelBufferSize-1
+	// sem limits the number of concurrent calls to Write()
 	sem *CountingSemaphore
 }
 

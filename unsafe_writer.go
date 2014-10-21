@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-// BUG(ORBAT): None of the Writers handles Close() gracefully.
+// BUG(ORBAT): UnsafeWriter's Close() does not wait for pending Write() calls to finish
 
 // BUG(ORBAT): UnsafeWriter seems to deadlock the producer if more than ChannelBufferSize concurrent Write()s are done. This can be,
 // at least temporarily, handled by using CountingSemaphore
