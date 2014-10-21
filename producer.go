@@ -151,7 +151,7 @@ func (m *MessageToSend) Partition() int32 {
 }
 
 func (m *MessageToSend) byteSize() int {
-	size := 14 // the metadata overhead of CRC, flags, etc.
+	size := 26 // the metadata overhead of CRC, flags, etc.
 	if m.Key != nil {
 		size += m.Key.Length()
 	}
@@ -220,7 +220,9 @@ func (p *Producer) topicDispatcher() {
 			continue
 		}
 
-		if msg.Value != nil && msg.Value.Length() > p.config.MaxMessageBytes {
+		if (p.config.Compression == CompressionNone && msg.Value != nil && msg.Value.Length() > p.config.MaxMessageBytes) ||
+			(msg.byteSize() > p.config.MaxMessageBytes) {
+
 			p.errors <- &ProduceError{Msg: msg, Err: MessageSizeTooLarge}
 			continue
 		}
@@ -362,7 +364,6 @@ func (p *Producer) brokerDispatcher() {
 		} else {
 			handler := handlers[msg.broker]
 			if handler == nil {
-				p.input <- &MessageToSend{flags: ref}
 				handler = make(chan *MessageToSend)
 				go p.messageAggregator(msg.broker, handler)
 				handlers[msg.broker] = handler
@@ -438,6 +439,7 @@ func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 	var closing error
 	currentRetries := make(map[string]map[int32]error)
 
+	p.input <- &MessageToSend{flags: ref}
 	for batch := range input {
 		if closing != nil {
 			p.retryMessages(batch, closing)
