@@ -67,7 +67,6 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 			select {
 			case <-p.closedCh:
 				p.log.Println("Closing response listener")
-				// TODO(ORBAT): handle all inflight Write()s in the event of a close
 				return
 			case perr, ok := <-errCh:
 				if !ok {
@@ -87,13 +86,23 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 				} else {
 					receiver <- perr
 				}
-				// allow other goroutines to run
-				// runtime.Gosched()
 			}
 		}
 	}(p)
 
 	return
+}
+
+var sequentialInts chan int = make(chan int, 20)
+
+func init() {
+	i := 0
+	go func() {
+		for {
+			sequentialInts <- i
+			i++
+		}
+	}()
 }
 
 // Write will queue p as a single message, blocking until a response is received.
@@ -104,26 +113,25 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 // n will always be len(p) if the message was sent successfully, 0 otherwise.
 func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 	n = len(p)
+	// counter := <-sequentialInts
 	qw.sem.Acquire()
+	// qw.log.Println("#%d Remaining semaphore acquires", counter, qw.sem.Remaining())
 	defer qw.sem.Release()
-	// counter := qw.sem.Count()
 	msg := &MessageToSend{Topic: qw.topic, Key: nil, Value: ByteEncoder(p)}
 	responseCh := make(chan *ProduceError, 1)
+	go func() {
+		qw.mut.Lock()
+		qw.chanForMsg[msg] = responseCh
+		qw.mut.Unlock()
+		qw.kp.Input() <- msg
+	}()
 
-	defer func() {
+	select {
+	case resp := <-responseCh:
 		qw.mut.Lock()
 		close(responseCh)
 		delete(qw.chanForMsg, msg)
 		qw.mut.Unlock()
-	}()
-
-	qw.mut.Lock()
-	qw.chanForMsg[msg] = responseCh
-	qw.mut.Unlock()
-	qw.kp.Input() <- msg
-
-	select {
-	case resp := <-responseCh:
 		if resp.Err != nil {
 			err = resp.Err
 			n = 0
@@ -153,6 +161,16 @@ func (qw *QueuingWriter) Closed() (closed bool) {
 	return
 }
 
+// SetLogger sets the logger used by this QueuingWriter.
+func (qw *QueuingWriter) SetLogger(l *log.Logger) {
+	qw.log = l
+}
+
+// CloseWait blocks until the QueuingWriter is closed.
+func (qw *QueuingWriter) CloseWait() {
+	<-qw.closedCh
+}
+
 func (qw *QueuingWriter) CloseAll() (err error) {
 	if qw.Closed() {
 		return syscall.EINVAL
@@ -180,16 +198,18 @@ func (qw *QueuingWriter) CloseAll() (err error) {
 	return
 }
 
+// Close closes the writer and its underlying producer. If CloseClient is true,
+// the client will be closed as well. If the writer has already been closed, Close will
+// return syscall.EINVAL.
 func (qw *QueuingWriter) Close() error {
 	if qw.Closed() {
 		return syscall.EINVAL
 	}
-
+	// TODO(ORBAT): handle all inflight Write()s in the event of a close
 	qw.log.Printf("Closing producer. CloseClient = %t", qw.CloseClient)
 	if qw.CloseClient == true {
 		return qw.CloseAll()
 	}
-	// TODO(ORBAT): handle all inflight Write()s in the event of a close
 	defer close(qw.closedCh)
 	return qw.kp.Close()
 }
