@@ -50,8 +50,8 @@ var opts struct {
 	Delimiter Char     `short:"d" long:"delimiter" default:"\\n" description:"Delimiter byte to use when reading stdin."`
 	Verbose   bool     `short:"v" long:"verbose" default:"false" description:"Print extra debugging cruft to stderr"`
 	Args      struct {
-		Topic string `name:"topic" description:"The topic to write to" required:"true"`
-	} `positional-args:"true"`
+		Topic string `name:"topic" description:"Topic to write to"`
+	} `positional-args:"true" required:"true"`
 }
 
 func main() {
