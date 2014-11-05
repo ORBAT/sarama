@@ -1,6 +1,10 @@
 package sarama
 
-import "time"
+import (
+	"fmt"
+	"sync"
+	"time"
+)
 
 func forceFlushThreshold() int {
 	return int(MaxRequestSize - (10 * 1024)) // 10KiB is safety room for misc. overhead, we might want to calculate this more precisely?
@@ -8,22 +12,22 @@ func forceFlushThreshold() int {
 
 // ProducerConfig is used to pass multiple configuration options to NewProducer.
 type ProducerConfig struct {
-	Partitioner       Partitioner      // Chooses the partition to send messages to (defaults to random).
-	RequiredAcks      RequiredAcks     // The level of acknowledgement reliability needed from the broker (defaults to WaitForLocal).
-	Timeout           time.Duration    // The maximum duration the broker will wait the receipt of the number of RequiredAcks. This is only relevant when RequiredAcks is set to WaitForAll or a number > 1. Only supports millisecond resolution, nanoseconds will be truncated.
-	Compression       CompressionCodec // The type of compression to use on messages (defaults to no compression).
-	FlushMsgCount     int              // The number of messages needed to trigger a flush.
-	FlushFrequency    time.Duration    // If this amount of time elapses without a flush, one will be queued.
-	FlushByteCount    int              // If this many bytes of messages are accumulated, a flush will be triggered.
-	AckSuccesses      bool             // If enabled, successfully delivered messages will also be returned on the Errors channel, with a nil Err field
-	MaxMessageBytes   int              // The maximum permitted size of a message (defaults to 1000000)
-	ChannelBufferSize int              // The size of the buffers of the channels between the different goroutines. Defaults to 0 (unbuffered).
+	Partitioner       PartitionerConstructor // Generates partitioners for choosing the partition to send messages to (defaults to hash).
+	RequiredAcks      RequiredAcks           // The level of acknowledgement reliability needed from the broker (defaults to WaitForLocal).
+	Timeout           time.Duration          // The maximum duration the broker will wait the receipt of the number of RequiredAcks. This is only relevant when RequiredAcks is set to WaitForAll or a number > 1. Only supports millisecond resolution, nanoseconds will be truncated.
+	Compression       CompressionCodec       // The type of compression to use on messages (defaults to no compression).
+	FlushMsgCount     int                    // The number of messages needed to trigger a flush.
+	FlushFrequency    time.Duration          // If this amount of time elapses without a flush, one will be queued.
+	FlushByteCount    int                    // If this many bytes of messages are accumulated, a flush will be triggered.
+	AckSuccesses      bool                   // If enabled, successfully delivered messages will also be returned on the Errors channel, with a nil Err field
+	MaxMessageBytes   int                    // The maximum permitted size of a message (defaults to 1000000)
+	ChannelBufferSize int                    // The size of the buffers of the channels between the different goroutines. Defaults to 0 (unbuffered).
 }
 
 // NewProducerConfig creates a new ProducerConfig instance with sensible defaults.
 func NewProducerConfig() *ProducerConfig {
 	return &ProducerConfig{
-		Partitioner:     NewRandomPartitioner(),
+		Partitioner:     NewHashPartitioner,
 		RequiredAcks:    WaitForLocal,
 		MaxMessageBytes: 1000000,
 	}
@@ -77,11 +81,14 @@ func (config *ProducerConfig) Validate() error {
 // scope (this is in addition to calling Close on the underlying client, which
 // is still necessary).
 type Producer struct {
-	client             *Client
-	config             ProducerConfig
-	errors             chan *ProduceError
-	input, readyToSend chan *MessageToSend
-	stopper            chan struct{}
+	client *Client
+	config ProducerConfig
+
+	errors         chan *ProduceError
+	input, retries chan *MessageToSend
+
+	brokers    map[*Broker]*brokerWorker
+	brokerLock sync.Mutex
 }
 
 // NewProducer creates a new Producer using the given client.
@@ -101,17 +108,17 @@ func NewProducer(client *Client, config *ProducerConfig) (*Producer, error) {
 	}
 
 	p := &Producer{
-		client:      client,
-		config:      *config,
-		errors:      make(chan *ProduceError),
-		input:       make(chan *MessageToSend),
-		readyToSend: make(chan *MessageToSend),
-		stopper:     make(chan struct{}),
+		client:  client,
+		config:  *config,
+		errors:  make(chan *ProduceError),
+		input:   make(chan *MessageToSend),
+		retries: make(chan *MessageToSend),
+		brokers: make(map[*Broker]*brokerWorker),
 	}
 
 	// launch our singleton dispatchers
-	go p.topicDispatcher()
-	go p.brokerDispatcher()
+	go withRecover(p.topicDispatcher)
+	go withRecover(p.retryHandler)
 
 	return p, nil
 }
@@ -132,7 +139,6 @@ type MessageToSend struct {
 	Key, Value Encoder
 
 	// these are filled in by the producer as the message is processed
-	broker    *Broker
 	offset    int64
 	partition int32
 	flags     flagSet
@@ -169,6 +175,15 @@ type ProduceError struct {
 	Err error
 }
 
+// ProduceErrors is a type that wraps a batch of "ProduceError"s and implements the Error interface.
+// It can be returned from the Producer's Close method to avoid the need to manually drain the Errors channel
+// when closing a producer.
+type ProduceErrors []*ProduceError
+
+func (pe ProduceErrors) Error() string {
+	return fmt.Sprintf("kafka: Failed to deliver %d messages.", len(pe))
+}
+
 // Errors is the output channel back to the user. You MUST read from this channel or the Producer will deadlock.
 // It is suggested that you send messages and read errors together in a single select statement.
 func (p *Producer) Errors() <-chan *ProduceError {
@@ -185,39 +200,36 @@ func (p *Producer) Input() chan<- *MessageToSend {
 // it may otherwise leak memory. You must call this before calling Close on the
 // underlying client.
 func (p *Producer) Close() error {
-	p.input <- &MessageToSend{flags: shutdown}
-	<-p.stopper
-	close(p.input)
-	return nil
+	go func() {
+		p.input <- &MessageToSend{flags: shutdown}
+	}()
+
+	var errors ProduceErrors
+	for event := range p.errors {
+		errors = append(errors, event)
+	}
+	return errors
 }
 
 ///////////////////////////////////////////
-// in normal processing, a message flows through the following functions from top to bottom,
+// In normal processing, a message flows through the following functions from top to bottom,
 // starting at topicDispatcher (which reads from Producer.input) and ending in flusher
-// (which sends the message to the broker)
+// (which sends the message to the broker). In cases where a message must be retried, it goes
+// through retryHandler before being returned to the top of the flow.
 ///////////////////////////////////////////
 
 // singleton
 func (p *Producer) topicDispatcher() {
 	handlers := make(map[string]chan *MessageToSend)
-	refs := 0
 
-	for {
-		msg := <-p.input
-
+	for msg := range p.input {
 		if msg == nil {
-			Logger.Printf("somebody sent a nil message to the producer, it was ignored")
+			Logger.Println("Something tried to send a nil message, it was ignored.")
 			continue
 		}
 
 		if msg.flags&shutdown != 0 {
 			break
-		} else if msg.flags&ref != 0 {
-			refs++
-			continue
-		} else if msg.flags&unref != 0 {
-			refs--
-			continue
 		}
 
 		if (p.config.Compression == CompressionNone && msg.Value != nil && msg.Value.Length() > p.config.MaxMessageBytes) ||
@@ -229,39 +241,39 @@ func (p *Producer) topicDispatcher() {
 
 		handler := handlers[msg.Topic]
 		if handler == nil {
-			handler = make(chan *MessageToSend, p.config.ChannelBufferSize)
-			go p.partitionDispatcher(msg.Topic, handler)
+			p.retries <- &MessageToSend{flags: ref}
+			newHandler := make(chan *MessageToSend, p.config.ChannelBufferSize)
+			go withRecover(func() { p.partitionDispatcher(msg.Topic, newHandler) })
+			handler = newHandler
 			handlers[msg.Topic] = handler
 		}
 
 		handler <- msg
 	}
 
+	Logger.Println("Producer shutting down.")
+
 	for _, handler := range handlers {
 		close(handler)
 	}
 
-	for refs > 0 {
-		msg := <-p.input
-		if msg.flags&ref != 0 {
-			refs++
-		} else if msg.flags&unref != 0 {
-			refs--
-		} else {
-			p.errors <- &ProduceError{Msg: msg, Err: ShuttingDown}
-		}
+	p.retries <- &MessageToSend{flags: shutdown}
+
+	for msg := range p.input {
+		p.errors <- &ProduceError{Msg: msg, Err: ShuttingDown}
 	}
 
-	close(p.stopper)
+	close(p.errors)
 }
 
 // one per topic
 func (p *Producer) partitionDispatcher(topic string, input chan *MessageToSend) {
 	handlers := make(map[int32]chan *MessageToSend)
+	partitioner := p.config.Partitioner()
 
 	for msg := range input {
 		if msg.flags&retried == 0 {
-			err := p.assignPartition(msg)
+			err := p.assignPartition(partitioner, msg)
 			if err != nil {
 				p.errors <- &ProduceError{Msg: msg, Err: err}
 				continue
@@ -270,8 +282,10 @@ func (p *Producer) partitionDispatcher(topic string, input chan *MessageToSend) 
 
 		handler := handlers[msg.partition]
 		if handler == nil {
-			handler = make(chan *MessageToSend, p.config.ChannelBufferSize)
-			go p.leaderDispatcher(msg.Topic, msg.partition, handler)
+			p.retries <- &MessageToSend{flags: ref}
+			newHandler := make(chan *MessageToSend, p.config.ChannelBufferSize)
+			go withRecover(func() { p.leaderDispatcher(msg.Topic, msg.partition, newHandler) })
+			handler = newHandler
 			handlers[msg.partition] = handler
 		}
 
@@ -281,101 +295,87 @@ func (p *Producer) partitionDispatcher(topic string, input chan *MessageToSend) 
 	for _, handler := range handlers {
 		close(handler)
 	}
+	p.retries <- &MessageToSend{flags: unref}
 }
 
 // one per partition per topic
 func (p *Producer) leaderDispatcher(topic string, partition int32, input chan *MessageToSend) {
 	var leader *Broker
-	var err error
-
-	var retryQueue, backlog []*MessageToSend
-
-	p.readyToSend <- &MessageToSend{flags: ref}
+	var output chan *MessageToSend
+	var backlog []*MessageToSend
 
 	for msg := range input {
 		if msg.flags&retried == 0 {
 			// normal case
-			if len(retryQueue) > 0 {
+			if backlog != nil {
 				backlog = append(backlog, msg)
 				continue
 			}
+		} else if msg.flags&chaser == 0 {
+			// retry flag set, chaser flag not set
+			if backlog == nil {
+				// on the very first retried message we send off a chaser so that we know when everything "in between" has made it
+				// back to us and we can safely flush the backlog (otherwise we risk re-ordering messages)
+				output <- &MessageToSend{Topic: topic, partition: partition, flags: chaser}
+				Logger.Println("Producer dispatching retried messages to new leader.")
+				backlog = make([]*MessageToSend, 0)
+				p.unrefBrokerWorker(leader)
+				output = nil
+			}
+		} else {
+			// retry *and* chaser flag set, flush the backlog and return to normal processing
+			Logger.Println("Producer finished dispatching retried messages, processing backlog.")
+			if output == nil {
+				err := p.client.RefreshTopicMetadata(topic)
+				if err != nil {
+					p.returnMessages(backlog, err)
+					backlog = nil
+					continue
+				}
 
-			if leader == nil {
 				leader, err = p.client.Leader(topic, partition)
+				if err != nil {
+					p.returnMessages(backlog, err)
+					backlog = nil
+					continue
+				}
+
+				output = p.getBrokerWorker(leader)
+			}
+
+			for _, msg := range backlog {
+				output <- msg
+			}
+			Logger.Println("Producer backlog processsed.")
+
+			backlog = nil
+			continue
+		}
+
+		if output == nil {
+			var err error
+			if backlog != nil {
+				err = p.client.RefreshTopicMetadata(topic)
 				if err != nil {
 					p.errors <- &ProduceError{Msg: msg, Err: err}
 					continue
 				}
 			}
 
-			msg.broker = leader
+			leader, err = p.client.Leader(topic, partition)
+			if err != nil {
+				p.errors <- &ProduceError{Msg: msg, Err: err}
+				continue
+			}
 
-			// messages from multiple topics/partitions may go to the same broker, so rather than storing a local map
-			// of brokers->goroutines, we route everything back through the singleton brokerDispatcher
-			p.readyToSend <- msg
-		} else if msg.flags&chaser == 0 {
-			// retry flag set, chaser flag not set
-			if len(retryQueue) == 0 {
-				// on the very first retried message we send off a chaser so that we know when everything "in between" has made it
-				// back to us and we can safely flush
-				p.readyToSend <- &MessageToSend{Topic: topic, partition: partition, broker: leader, flags: chaser}
-			}
-			retryQueue = append(retryQueue, msg)
-		} else {
-			// retry *and* chaser flag set, flush everything and return to normal processing
-			err = p.client.RefreshTopicMetadata(topic)
-			if err == nil {
-				leader, err = p.client.Leader(topic, partition)
-			}
-			if err == nil {
-				for _, msg := range retryQueue {
-					msg.broker = leader
-					p.readyToSend <- msg
-				}
-				for _, msg := range backlog {
-					msg.broker = leader
-					p.readyToSend <- msg
-				}
-			} else {
-				p.returnMessages(retryQueue, err)
-				p.returnMessages(backlog, err)
-			}
-			retryQueue = nil
-			backlog = nil
+			output = p.getBrokerWorker(leader)
 		}
+
+		output <- msg
 	}
 
-	p.readyToSend <- &MessageToSend{flags: unref}
-}
-
-// singleton
-func (p *Producer) brokerDispatcher() {
-	handlers := make(map[*Broker]chan *MessageToSend)
-	refs := 0
-
-	for msg := range p.readyToSend {
-		if msg.flags&ref == ref {
-			refs++
-		} else if msg.flags&unref == unref {
-			refs--
-			if refs == 0 {
-				close(p.readyToSend)
-			}
-		} else {
-			handler := handlers[msg.broker]
-			if handler == nil {
-				handler = make(chan *MessageToSend)
-				go p.messageAggregator(msg.broker, handler)
-				handlers[msg.broker] = handler
-			}
-
-			handler <- msg
-		}
-	}
-
-	for _, handler := range handlers {
-		close(handler)
-	}
+	p.unrefBrokerWorker(leader)
+	p.retries <- &MessageToSend{flags: unref}
 }
 
 // one per broker
@@ -392,7 +392,7 @@ func (p *Producer) messageAggregator(broker *Broker, input chan *MessageToSend) 
 	var bytesAccumulated int
 
 	flusher := make(chan []*MessageToSend)
-	go p.flusher(broker, flusher)
+	go withRecover(func() { p.flusher(broker, flusher) })
 
 	for {
 		select {
@@ -401,7 +401,9 @@ func (p *Producer) messageAggregator(broker *Broker, input chan *MessageToSend) 
 				goto shutdown
 			}
 
-			if bytesAccumulated+msg.byteSize() >= forceFlushThreshold() {
+			if (bytesAccumulated+msg.byteSize() >= forceFlushThreshold()) ||
+				(p.config.Compression != CompressionNone && bytesAccumulated+msg.byteSize() >= p.config.MaxMessageBytes) {
+				Logger.Println("Producer accumulated maximum request size, forcing blocking flush.")
 				flusher <- buffer
 				buffer = nil
 				doFlush = nil
@@ -439,7 +441,6 @@ func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 	var closing error
 	currentRetries := make(map[string]map[int32]error)
 
-	p.input <- &MessageToSend{flags: ref}
 	for batch := range input {
 		if closing != nil {
 			p.retryMessages(batch, closing)
@@ -454,7 +455,7 @@ func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 					// we can start processing this topic/partition again
 					currentRetries[msg.Topic][msg.partition] = nil
 				}
-				p.retryMessage(msg, currentRetries[msg.Topic][msg.partition])
+				p.retryMessages([]*MessageToSend{msg}, currentRetries[msg.Topic][msg.partition])
 				batch[i] = nil // to prevent it being returned/retried twice
 				continue
 			}
@@ -528,7 +529,50 @@ func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 			}
 		}
 	}
-	p.input <- &MessageToSend{flags: unref}
+	p.retries <- &MessageToSend{flags: unref}
+}
+
+// singleton
+func (p *Producer) retryHandler() {
+	var buf []*MessageToSend
+	var msg *MessageToSend
+	refs := 0
+	shuttingDown := false
+
+	for {
+		if len(buf) == 0 {
+			msg = <-p.retries
+		} else {
+			select {
+			case msg = <-p.retries:
+			case p.input <- buf[0]:
+				buf = buf[1:]
+				continue
+			}
+		}
+
+		if msg.flags&ref != 0 {
+			refs++
+		} else if msg.flags&unref != 0 {
+			refs--
+			if refs == 0 && shuttingDown {
+				break
+			}
+		} else if msg.flags&shutdown != 0 {
+			shuttingDown = true
+			if refs == 0 {
+				break
+			}
+		} else {
+			buf = append(buf, msg)
+		}
+	}
+
+	close(p.retries)
+	for i := range buf {
+		p.input <- buf[i]
+	}
+	close(p.input)
 }
 
 ///////////////////////////////////////////
@@ -536,7 +580,7 @@ func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 
 // utility functions
 
-func (p *Producer) assignPartition(msg *MessageToSend) error {
+func (p *Producer) assignPartition(partitioner Partitioner, msg *MessageToSend) error {
 	partitions, err := p.client.Partitions(msg.Topic)
 	if err != nil {
 		return err
@@ -548,7 +592,7 @@ func (p *Producer) assignPartition(msg *MessageToSend) error {
 		return LeaderNotAvailable
 	}
 
-	choice := p.config.Partitioner.Partition(msg.Key, numPartitions)
+	choice := partitioner.Partition(msg.Key, numPartitions)
 
 	if choice < 0 || choice >= numPartitions {
 		return InvalidPartition
@@ -617,9 +661,8 @@ func (p *Producer) buildRequest(batch map[string]map[int32][]*MessageToSend) *Pr
 
 	if empty {
 		return nil
-	} else {
-		return req
 	}
+	return req
 }
 
 func (p *Producer) returnMessages(batch []*MessageToSend, err error) {
@@ -632,19 +675,58 @@ func (p *Producer) returnMessages(batch []*MessageToSend, err error) {
 }
 
 func (p *Producer) retryMessages(batch []*MessageToSend, err error) {
+	Logger.Println("Producer requeueing batch of", len(batch), "messages due to error:", err)
 	for _, msg := range batch {
 		if msg == nil {
 			continue
 		}
-		p.retryMessage(msg, err)
+		if msg.flags&retried == retried {
+			p.errors <- &ProduceError{Msg: msg, Err: err}
+		} else {
+			msg.flags |= retried
+			p.retries <- msg
+		}
 	}
+	Logger.Println("Messages requeued")
 }
 
-func (p *Producer) retryMessage(msg *MessageToSend, err error) {
-	if msg.flags&retried == retried {
-		p.errors <- &ProduceError{Msg: msg, Err: err}
+type brokerWorker struct {
+	input chan *MessageToSend
+	refs  int
+}
+
+func (p *Producer) getBrokerWorker(broker *Broker) chan *MessageToSend {
+	p.brokerLock.Lock()
+	defer p.brokerLock.Unlock()
+
+	worker := p.brokers[broker]
+
+	if worker == nil {
+		p.retries <- &MessageToSend{flags: ref}
+		worker = &brokerWorker{
+			refs:  1,
+			input: make(chan *MessageToSend),
+		}
+		p.brokers[broker] = worker
+		go withRecover(func() { p.messageAggregator(broker, worker.input) })
 	} else {
-		msg.flags |= retried
-		p.input <- msg
+		worker.refs++
+	}
+
+	return worker.input
+}
+
+func (p *Producer) unrefBrokerWorker(broker *Broker) {
+	p.brokerLock.Lock()
+	defer p.brokerLock.Unlock()
+
+	worker := p.brokers[broker]
+
+	if worker != nil {
+		worker.refs--
+		if worker.refs == 0 {
+			close(worker.input)
+			delete(p.brokers, broker)
+		}
 	}
 }

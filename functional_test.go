@@ -137,7 +137,6 @@ func testProducingMessages(t *testing.T, config *ProducerConfig) {
 
 	}
 }
-
 func newParallelProdConf() *ProducerConfig {
 	pc := NewProducerConfig()
 	pc.FlushFrequency = 50 * time.Millisecond
