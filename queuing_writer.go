@@ -210,6 +210,6 @@ func (qw *QueuingWriter) Close() error {
 	if qw.CloseClient == true {
 		return qw.CloseAll()
 	}
-	defer close(qw.closedCh)
+	close(qw.closedCh)
 	return qw.kp.Close()
 }
