@@ -208,11 +208,9 @@ func (p *Producer) Close() error {
 	for event := range p.errors {
 		errors = append(errors, event)
 	}
-
 	if len(errors) > 0 {
 		return errors
 	}
-
 	return nil
 }
 
