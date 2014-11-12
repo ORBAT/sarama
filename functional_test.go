@@ -106,19 +106,17 @@ func testProducingMessages(t *testing.T, config *ProducerConfig) {
 		case producer.Input() <- msg:
 			i++
 		case ret := <-producer.Errors():
-			if ret.Err == nil {
-				expectedResponses--
-			} else {
-				t.Fatal(ret.Err)
-			}
+			t.Fatal(ret.Err)
+		case <-producer.Successes():
+			expectedResponses--
 		}
 	}
 	for expectedResponses > 0 {
-		ret := <-producer.Errors()
-		if ret.Err == nil {
-			expectedResponses--
-		} else {
+		select {
+		case ret := <-producer.Errors():
 			t.Fatal(ret.Err)
+		case <-producer.Successes():
+			expectedResponses--
 		}
 	}
 	err = producer.Close()
@@ -128,137 +126,6 @@ func testProducingMessages(t *testing.T, config *ProducerConfig) {
 
 	events := consumer.Events()
 	for i := 1; i <= TestBatchSize; i++ {
-		select {
-		case <-time.After(10 * time.Second):
-			t.Fatal("Not received any more events in the last 10 seconds.")
-
-		case event := <-events:
-			if string(event.Value) != fmt.Sprintf("testing %d", i) {
-				t.Fatalf("Unexpected message with index %d: %s", i, event.Value)
-			}
-		}
-
-	}
-}
-func newParallelProdConf() *ProducerConfig {
-	pc := NewProducerConfig()
-	pc.FlushFrequency = 50 * time.Millisecond
-	pc.FlushByteCount = 800000
-	pc.FlushMsgCount = 200
-	pc.ChannelBufferSize = 20
-	return pc
-}
-
-func TestFuncQueuingWriterParallel(t *testing.T) {
-	pc := newParallelProdConf()
-	defer LogTo(os.Stderr)()
-	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	producer, err := client.NewQueuingWriter("single_partition", pc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	testWriterParallel(client, producer, pc, 100, t)
-}
-
-func TestFuncQueuingWriterSingle(t *testing.T) {
-	pc := NewProducerConfig()
-
-	defer LogTo(os.Stderr)()
-	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	producer, err := client.NewQueuingWriter("single_partition", pc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	testWriter(client, producer, t)
-}
-
-func TestSyncWriterParallel(t *testing.T) {
-	pc := newParallelProdConf()
-	defer LogTo(os.Stderr)()
-	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	producer, err := client.NewSyncWriter("single_partition", pc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	testWriterParallel(client, producer, pc, 100, t)
-}
-
-func TestFuncUnsafeWriterParallel(t *testing.T) {
-	pc := newParallelProdConf()
-	defer LogTo(os.Stderr)()
-	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	producer, err := client.NewUnsafeWriter("single_partition", pc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	testWriterParallel(client, producer, pc, 100, t)
-}
-
-func TestFuncUnsafeWriterSingle(t *testing.T) {
-	pc := NewProducerConfig()
-	defer LogTo(os.Stderr)()
-	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-
-	producer, err := client.NewUnsafeWriter("single_partition", pc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	testWriter(client, producer, t)
-}
-
-func testWriter(client *Client, producer io.WriteCloser, t *testing.T) {
-
-	checkKafkaAvailability(t)
-
-	consumerConfig := NewConsumerConfig()
-	consumerConfig.OffsetMethod = OffsetMethodNewest
-
-	consumer, err := NewConsumer(client, "single_partition", 0, "functional_test", consumerConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer consumer.Close()
-
-	var msg []byte
-	for i := 0; i < TestBatchSize; i++ {
-		msg = []byte(fmt.Sprintf("testing %d", i))
-		n, err := producer.Write(msg)
-
-		if err != nil {
-			t.Fatal(err)
-		}
-		if n != len(msg) {
-			t.Fatal("Wrote", n, "bytes, expected", len(msg))
-		}
-	}
-	producer.Close()
-
-	events := consumer.Events()
-	for i := 0; i < TestBatchSize; i++ {
 		select {
 		case <-time.After(10 * time.Second):
 			t.Fatal("Not received any more events in the last 10 seconds.")
