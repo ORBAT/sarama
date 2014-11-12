@@ -20,8 +20,6 @@ type SyncWriter struct {
 	log      *log.Logger
 	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseAll()
 	CloseClient bool
-	// sem limits the number of concurrent calls to 1
-	sem *CountingSemaphore
 }
 
 // NewSyncWriter returns a new SyncWriter.
@@ -50,8 +48,7 @@ func (c *Client) NewSyncWriter(topic string, config *ProducerConfig) (p *SyncWri
 		id:       id,
 		topic:    topic,
 		log:      pl,
-		closedCh: make(chan struct{}),
-		sem:      NewCountingSemaphore(1)}
+		closedCh: make(chan struct{})}
 	return
 }
 
@@ -71,9 +68,6 @@ func (k *SyncWriter) ReadFrom(r io.Reader) (n int64, err error) {
 //
 // n is len(p) if the send succeeds and 0 in case of errors.
 func (k *SyncWriter) Write(p []byte) (n int, err error) {
-	k.sem.Acquire()
-	defer k.sem.Release()
-
 	k.kp.Input() <- &MessageToSend{Topic: k.topic, Key: nil, Value: ByteEncoder(p)}
 
 	select {

@@ -10,11 +10,9 @@ import (
 
 // BUG(ORBAT): UnsafeWriter's Close() does not wait for pending Write() calls to finish
 
-// BUG(ORBAT): UnsafeWriter seems to deadlock the producer if more than ChannelBufferSize concurrent Write()s are done. This can be,
-// at least temporarily, handled by using CountingSemaphore
+// BUG(ORBAT): UnsafeWriter's Close() has a race condition
 
-// UnsafeWriter is an io.Writer that writes messages to Kafka, ignoring any error responses sent by the brokers. Parallel calls to Write are safe,
-// but they are limited by the underlying Producer's ChannelBufferSize.
+// UnsafeWriter is an io.Writer that writes messages to Kafka, ignoring any error responses sent by the brokers. Parallel calls to Write are safe.
 //
 // Close() must be called when the writer is no longer needed.
 type UnsafeWriter struct {
@@ -26,8 +24,6 @@ type UnsafeWriter struct {
 	log      *log.Logger
 	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseAll()
 	CloseClient bool
-	// sem limits the number of concurrent calls to ChannelBufferSize-1
-	sem *CountingSemaphore
 }
 
 // NewUnsafeWriter returns a new UnsafeWriter.
@@ -45,7 +41,7 @@ func (c *Client) NewUnsafeWriter(topic string, config *ProducerConfig) (p *Unsaf
 	if err != nil {
 		return nil, err
 	}
-	p = &UnsafeWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: closedCh, sem: NewCountingSemaphore(kp.config.ChannelBufferSize - 1)}
+	p = &UnsafeWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: closedCh}
 	go func() {
 		pl.Println("Starting error listener")
 		for {
@@ -100,12 +96,10 @@ func (k *UnsafeWriter) ReadFrom(r io.Reader) (int64, error) {
 	return int64(ni), nil
 }
 
-// Write writes byte slices to Kafka without checking for error responses. n will always be len(p) and err will be nil. The maximum number of parallel
-// Write calls is limited by the Producer's ChannelBufferSize
+// Write writes byte slices to Kafka without checking for error responses. n will always be len(p) and err will be nil.
 func (k *UnsafeWriter) Write(p []byte) (n int, err error) {
-	k.sem.Acquire()
-	defer k.sem.Release()
 	n = len(p)
+
 	k.kp.Input() <- &MessageToSend{Topic: k.topic, Key: nil, Value: ByteEncoder(p)}
 
 	return
