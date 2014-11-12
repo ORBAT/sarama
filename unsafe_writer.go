@@ -171,11 +171,11 @@ func (k *UnsafeWriter) Close() error {
 	if k.Closed() {
 		return syscall.EINVAL
 	}
-
+	close(k.closedCh)
 	k.log.Printf("Closing producer. CloseClient = %t", k.CloseClient)
 	if k.CloseClient == true {
 		return k.CloseAll()
 	}
-	defer close(k.closedCh)
+
 	return k.kp.Close()
 }
