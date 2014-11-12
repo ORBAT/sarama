@@ -41,8 +41,6 @@ func testProd(kp *SyncWriter, wg *sync.WaitGroup, t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-
-	t.Logf("test for producer %s done", kp.id)
 }
 
 func ExampleClient_SyncWriter() {
