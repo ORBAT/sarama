@@ -35,7 +35,7 @@ func ExampleClient_UnsafeWriter() {
 
 func testUnsafeProd(kp *UnsafeWriter, wg *sync.WaitGroup, t *testing.T) {
 	defer wg.Done()
-	defer safeClose(kp)
+	defer closeOrPanic(kp)
 	for i := 0; i < 10; i++ {
 		n, err := kp.Write([]byte(TestMessage))
 		if n != len(TestMessage) {
@@ -78,7 +78,7 @@ func TestUnsafeWriterTwoInstances(t *testing.T) {
 			t.Error("Client wasn't closed?")
 		}
 	}(kc)
-	defer safeClose(kc)
+	defer closeOrPanic(kc)
 	pc := fastFlushConfig()
 
 	kp, err := kc.NewUnsafeWriter("test-topic", pc)
@@ -128,7 +128,7 @@ func TestUnsafeWriterOneInstance(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	defer safeCloseAll(kp)
+	defer closeAllOrPanic(kp)
 
 	for i := 0; i < 10; i++ {
 		n, err := kp.Write([]byte(TestMessage))
@@ -156,7 +156,7 @@ func BenchmarkKafkaUnsafeProdNoCompressionCluster(b *testing.B) {
 	for i := range testMsg {
 		testMsg[i] = byte(i)
 	}
-	defer safeCloseAll(kp)
+	defer closeAllOrPanic(kp)
 	b.Log("Client created")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -176,7 +176,7 @@ func BenchmarkKafkaUnsafeProdNoCompressionSingle(b *testing.B) {
 	for i := range testMsg {
 		testMsg[i] = byte(i)
 	}
-	defer safeCloseAll(kp)
+	defer closeAllOrPanic(kp)
 	b.Log("Client created")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

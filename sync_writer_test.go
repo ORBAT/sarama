@@ -16,13 +16,13 @@ type AllCloser interface {
 	CloseAll() error
 }
 
-func safeCloseAll(bc AllCloser) {
+func closeAllOrPanic(bc AllCloser) {
 	if err := bc.CloseAll(); err != nil {
 		panic(err)
 	}
 }
 
-func safeClose(p io.Closer) {
+func closeOrPanic(p io.Closer) {
 	if err := p.Close(); err != nil {
 		panic(err)
 	}
@@ -30,7 +30,7 @@ func safeClose(p io.Closer) {
 
 func testProd(kp *SyncWriter, wg *sync.WaitGroup, t *testing.T) {
 	defer wg.Done()
-	defer safeClose(kp)
+	defer closeOrPanic(kp)
 	for i := 0; i < 10; i++ {
 		n, err := kp.Write([]byte{1, 2, 3, 4, 5})
 		if n != 5 {
@@ -88,7 +88,7 @@ func TestSyncWriterTwoInstances(t *testing.T) {
 			t.Error("Client wasn't closed?")
 		}
 	}(kc)
-	defer safeClose(kc)
+	defer closeOrPanic(kc)
 	kp, err := kc.NewSyncWriter("test-topic", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestSyncWriterOneInstance(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	defer safeCloseAll(kp)
+	defer closeAllOrPanic(kp)
 
 	for i := 0; i < 10; i++ {
 		n, err := kp.Write([]byte{1, 2, 3, 4})
@@ -161,7 +161,7 @@ func BenchmarkKafkaProdNoCompressionCluster(b *testing.B) {
 	for i := range testMsg {
 		testMsg[i] = byte(i)
 	}
-	defer safeCloseAll(kp)
+	defer closeAllOrPanic(kp)
 	b.Log("Client created")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -181,7 +181,7 @@ func BenchmarkKafkaProdNoCompressionSingle(b *testing.B) {
 	for i := range testMsg {
 		testMsg[i] = byte(i)
 	}
-	defer safeCloseAll(kp)
+	defer closeAllOrPanic(kp)
 	b.Log("Client created")
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
