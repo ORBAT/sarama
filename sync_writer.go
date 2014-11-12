@@ -73,14 +73,15 @@ func (k *SyncWriter) ReadFrom(r io.Reader) (n int64, err error) {
 func (k *SyncWriter) Write(p []byte) (n int, err error) {
 	k.sem.Acquire()
 	defer k.sem.Release()
-	n = len(p)
+
 	k.kp.Input() <- &MessageToSend{Topic: k.topic, Key: nil, Value: ByteEncoder(p)}
 
-	perr := <-k.kp.Errors()
-
-	if perr.Err != nil {
+	select {
+	case perr := <-k.kp.Errors():
 		n = 0
 		err = perr.Err
+	case _ = <-k.kp.Successes():
+		n = len(p)
 	}
 
 	return

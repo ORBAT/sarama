@@ -45,27 +45,31 @@ func (c *Client) NewUnsafeWriter(topic string, config *ProducerConfig) (p *Unsaf
 	if err != nil {
 		return nil, err
 	}
-
-	go func(errCh <-chan *ProduceError, closedCh chan struct{}, pl *log.Logger) {
+	p = &UnsafeWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: closedCh, sem: NewCountingSemaphore(kp.config.ChannelBufferSize - 1)}
+	go func() {
 		pl.Println("Starting error listener")
 		for {
 			select {
 			case <-closedCh:
 				pl.Println("Closing error listener")
 				return
-			case perr, ok := <-errCh:
+			case perr, ok := <-kp.Errors():
 				if !ok {
 					pl.Println("Errors() channel closed?!")
+					p.Close()
 					return
 				}
-				if perr.Err != nil {
-					pl.Println("Got error from Kafka:", err)
+				pl.Println("Got error from Kafka:", perr)
+			case _, ok := <-kp.Successes():
+				if !ok {
+					pl.Println("Successes() channel closed?!")
+					p.Close()
+					return
 				}
 			}
 		}
-	}(kp.Errors(), closedCh, pl)
+	}()
 
-	p = &UnsafeWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: closedCh, sem: NewCountingSemaphore(kp.config.ChannelBufferSize - 1)}
 	return
 }
 

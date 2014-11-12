@@ -25,9 +25,9 @@ type QueuingWriter struct {
 	log      *log.Logger
 	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseAll()
 	CloseClient bool
-	// mut is the mutex for chanForMsg
-	mut        sync.RWMutex
-	chanForMsg map[*MessageToSend]chan *ProduceError
+	// mut is the mutex for errChForMsg
+	mut         sync.RWMutex
+	errChForMsg map[*MessageToSend]chan error
 	// sem limits the number of concurrent calls to Write()
 	sem *CountingSemaphore
 }
@@ -53,15 +53,17 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 	id := "qw-" + TimestampRandom()
 	pl := NewLogger(fmt.Sprintf("QueuingWr %s -> %s", id, topic), nil)
 	p = &QueuingWriter{kp: kp,
-		id:         id,
-		topic:      topic,
-		log:        pl,
-		closedCh:   make(chan struct{}),
-		chanForMsg: make(map[*MessageToSend]chan *ProduceError),
-		sem:        NewCountingSemaphore(kp.config.ChannelBufferSize - 1)}
+		id:          id,
+		topic:       topic,
+		log:         pl,
+		closedCh:    make(chan struct{}),
+		errChForMsg: make(map[*MessageToSend]chan error),
+		sem:         NewCountingSemaphore(kp.config.ChannelBufferSize - 1)}
 
 	go func(p *QueuingWriter) {
 		errCh := p.kp.Errors()
+		succCh := p.kp.Successes()
+
 		p.log.Println("Starting response listener")
 		for {
 			select {
@@ -74,18 +76,14 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 					close(p.closedCh)
 					return
 				}
-				if perr.Err != nil {
-					p.log.Println("Got error from Kafka:", err)
-				}
-				// p.log.Printf("Received %p", perr.Msg)
-				p.mut.RLock()
-				receiver, ok := p.chanForMsg[perr.Msg]
-				p.mut.RUnlock()
+				p.sendProdResponse(perr.Msg, perr.Err)
+			case succ, ok := <-succCh:
 				if !ok {
-					p.log.Panicf("Nobody wanted *MessageToSend %p?", perr.Msg)
-				} else {
-					receiver <- perr
+					pl.Println("Successes() channel closed?!")
+					close(p.closedCh)
+					return
 				}
+				p.sendProdResponse(succ, nil)
 			}
 		}
 	}(p)
@@ -105,6 +103,17 @@ func init() {
 	}()
 }
 
+func (qw *QueuingWriter) sendProdResponse(msg *MessageToSend, perr error) {
+	qw.mut.RLock()
+	receiver, ok := qw.errChForMsg[msg]
+	qw.mut.RUnlock()
+	if !ok {
+		qw.log.Panicf("Nobody wanted *MessageToSend %p?", msg)
+	} else {
+		receiver <- perr
+	}
+}
+
 // Write will queue p as a single message, blocking until a response is received.
 // It is safe to call Write in parallel. The number of inflight parallel calls to Write is
 // limited by the underlying Producer's ChannelBufferSize; if it is 0, QueuingWriter will
@@ -118,10 +127,10 @@ func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 	// qw.log.Println("#%d Remaining semaphore acquires", counter, qw.sem.Remaining())
 	defer qw.sem.Release()
 	msg := &MessageToSend{Topic: qw.topic, Key: nil, Value: ByteEncoder(p)}
-	responseCh := make(chan *ProduceError, 1)
+	responseCh := make(chan error, 1)
 	go func() {
 		qw.mut.Lock()
-		qw.chanForMsg[msg] = responseCh
+		qw.errChForMsg[msg] = responseCh
 		qw.mut.Unlock()
 		qw.kp.Input() <- msg
 	}()
@@ -130,10 +139,10 @@ func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 	case resp := <-responseCh:
 		qw.mut.Lock()
 		close(responseCh)
-		delete(qw.chanForMsg, msg)
+		delete(qw.errChForMsg, msg)
 		qw.mut.Unlock()
-		if resp.Err != nil {
-			err = resp.Err
+		if resp != nil {
+			err = resp
 			n = 0
 		}
 	}
