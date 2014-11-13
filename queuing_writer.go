@@ -84,18 +84,6 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 	return
 }
 
-var sequentialInts chan int = make(chan int, 20)
-
-func init() {
-	i := 0
-	go func() {
-		for {
-			sequentialInts <- i
-			i++
-		}
-	}()
-}
-
 func (qw *QueuingWriter) sendProdResponse(msg *MessageToSend, perr error) {
 	qw.mut.RLock()
 	receiver, ok := qw.errChForMsg[msg]
@@ -117,13 +105,12 @@ func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 	n = len(p)
 	msg := &MessageToSend{Topic: qw.topic, Key: nil, Value: ByteEncoder(p)}
 	errCh := make(chan error, 1)
-	go func() {
-		qw.mut.Lock()
-		qw.pendingWg.Add(1)
-		qw.errChForMsg[msg] = errCh
-		qw.mut.Unlock()
-		qw.kp.Input() <- msg
-	}()
+
+	qw.mut.Lock()
+	qw.pendingWg.Add(1)
+	qw.errChForMsg[msg] = errCh
+	qw.mut.Unlock()
+	qw.kp.Input() <- msg
 
 	select {
 	case resp := <-errCh:
