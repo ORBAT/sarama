@@ -6,25 +6,24 @@ import (
 	"io/ioutil"
 	"log"
 	"sync"
+	"sync/atomic"
 	"syscall"
 )
-
-// BUG(ORBAT): QueuingWriter's Close() doesn't wait for pending Write() calls to finish
-// BUG(ORBAT): QueuingWriter's Close() has a race condition
 
 // QueuingWriter is an io.Writer that writes messages to Kafka. Parallel calls to Write() will cause messages to be queued by the producer, and
 // each Write() call will block until a response is received.
 type QueuingWriter struct {
-	kp     *Producer
-	id     string
-	topic  string
-	stopCh chan struct{}
-	log    *log.Logger
-	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseAll()
-	CloseClient bool
-	// mut is the mutex for errChForMsg
-	mut         sync.RWMutex
+	kp          *Producer
+	id          string
+	topic       string
+	stopCh      chan struct{}
+	closed      int32 // nonzero if the writer has been closed
+	log         *log.Logger
+	CloseClient bool         // if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseAll()
+	mut         sync.RWMutex // mutex for errChForMsg
+	closeMut    sync.Mutex   // mutex for Close and CloseAll
 	errChForMsg map[*MessageToSend]chan error
+	pendingWg   sync.WaitGroup // WaitGroup for pending message responses
 }
 
 // DefaultChanBufferSize is the default ChannelBufferSize to use when NewQueuingWriter is called with a nil config.
@@ -54,7 +53,7 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 		stopCh:      make(chan struct{}),
 		errChForMsg: make(map[*MessageToSend]chan error)}
 
-	go func(p *QueuingWriter) {
+	go func() {
 		errCh := p.kp.Errors()
 		succCh := p.kp.Successes()
 
@@ -66,21 +65,21 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 				return
 			case perr, ok := <-errCh:
 				if !ok {
-					pl.Println("Errors() channel closed?!")
+					p.log.Println("Errors() channel closed?!")
 					close(p.stopCh)
-					return
+					continue
 				}
 				p.sendProdResponse(perr.Msg, perr.Err)
 			case succ, ok := <-succCh:
 				if !ok {
-					pl.Println("Successes() channel closed?!")
+					p.log.Println("Successes() channel closed?!")
 					close(p.stopCh)
-					return
+					continue
 				}
 				p.sendProdResponse(succ, nil)
 			}
 		}
-	}(p)
+	}()
 
 	return
 }
@@ -120,6 +119,7 @@ func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 	errCh := make(chan error, 1)
 	go func() {
 		qw.mut.Lock()
+		qw.pendingWg.Add(1)
 		qw.errChForMsg[msg] = errCh
 		qw.mut.Unlock()
 		qw.kp.Input() <- msg
@@ -128,6 +128,7 @@ func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 	select {
 	case resp := <-errCh:
 		qw.mut.Lock()
+		qw.pendingWg.Done()
 		close(errCh)
 		delete(qw.errChForMsg, msg)
 		qw.mut.Unlock()
@@ -151,13 +152,8 @@ func (qw *QueuingWriter) ReadFrom(r io.Reader) (n int64, err error) {
 	return int64(ni), err
 }
 
-func (qw *QueuingWriter) Closed() (closed bool) {
-	select {
-	case _, ok := <-qw.stopCh:
-		closed = !ok
-	default:
-	}
-	return
+func (qw *QueuingWriter) Closed() bool {
+	return atomic.LoadInt32(&qw.closed) != 0
 }
 
 // SetLogger sets the logger used by this QueuingWriter.
@@ -165,18 +161,30 @@ func (qw *QueuingWriter) SetLogger(l *log.Logger) {
 	qw.log = l
 }
 
+func (qw *QueuingWriter) stopListener() {
+	atomic.StoreInt32(&qw.closed, 1)
+	qw.pendingWg.Wait() // wait for pending writes to complete
+	close(qw.stopCh)    // signal response listener stop
+}
+
+// CloseAll closes both the underlying Producer and Client. If the writer has already been closed, CloseAll will
+// return syscall.EINVAL.
 func (qw *QueuingWriter) CloseAll() (err error) {
+	qw.closeMut.Lock()
+	defer qw.closeMut.Unlock()
+
 	if qw.Closed() {
 		return syscall.EINVAL
 	}
 
-	// defer close(qw.stopCh)
+	qw.log.Println("Closing producer and client")
+
+	qw.stopListener()
+
 	var me *MultiError
 	if perr := qw.kp.Close(); perr != nil {
 		me = &MultiError{Errors: append(make([]error, 0, 2), perr)}
 	}
-
-	qw.log.Println("Closing client")
 
 	if clerr := qw.kp.client.Close(); clerr != nil {
 		if me == nil {
@@ -196,14 +204,18 @@ func (qw *QueuingWriter) CloseAll() (err error) {
 // the client will be closed as well. If the writer has already been closed, Close will
 // return syscall.EINVAL.
 func (qw *QueuingWriter) Close() error {
-	if qw.Closed() {
-		return syscall.EINVAL
-	}
-	// TODO(ORBAT): QueuingWriter should handle all inflight Write()s in the event of a close
-	qw.log.Printf("Closing producer. CloseClient = %t", qw.CloseClient)
+	qw.closeMut.Lock()
+	defer qw.closeMut.Unlock()
+
 	if qw.CloseClient == true {
 		return qw.CloseAll()
 	}
-	close(qw.stopCh)
+	if qw.Closed() {
+		return syscall.EINVAL
+	}
+	qw.log.Println("Closing producer")
+
+	qw.stopListener()
+
 	return qw.kp.Close()
 }
