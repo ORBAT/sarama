@@ -167,7 +167,7 @@ func TestUnsafeWriterOneInstance(t *testing.T) {
 	<-time.After(5 * time.Millisecond)
 }
 
-func BenchmarkKafkaUnsafeProdNoCompressionCluster(b *testing.B) {
+func BenchmarkUnsafeWriterNoCompressionCluster(b *testing.B) {
 	// defer LogTo(os.Stderr)()
 	kc, err := NewClient("no-compr-benchmark-c", clusterBroker, nil)
 	if err != nil {
@@ -187,7 +187,7 @@ func BenchmarkKafkaUnsafeProdNoCompressionCluster(b *testing.B) {
 	}
 }
 
-func BenchmarkKafkaUnsafeProdNoCompressionSingle(b *testing.B) {
+func BenchmarkUnsafeWriterNoCompressionSingle(b *testing.B) {
 	// defer LogTo(os.Stderr)()
 	kc, err := NewClient("no-compr-benchmark", []string{"127.0.0.1:9092"}, nil)
 	if err != nil {
