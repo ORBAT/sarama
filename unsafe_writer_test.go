@@ -2,12 +2,34 @@ package sarama
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"sync"
 	"testing"
 	"time"
 )
+
+var clusterBroker = []string{"127.0.0.1:10092", "127.0.0.1:10093", "127.0.0.1:10094"}
+var clusterZk = []string{"localhost:22181", "localhost:22182"}
+var singleZk = []string{"localhost:2181"}
+var singleBroker = []string{"localhost:9092"}
+
+type AllCloser interface {
+	CloseAll() error
+}
+
+func closeAllOrPanic(bc AllCloser) {
+	if err := bc.CloseAll(); err != nil {
+		panic(err)
+	}
+}
+
+func closeOrPanic(p io.Closer) {
+	if err := p.Close(); err != nil {
+		panic(err)
+	}
+}
 
 func fastFlushConfig() *ProducerConfig {
 	config := NewProducerConfig()
