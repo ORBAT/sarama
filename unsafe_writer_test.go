@@ -33,7 +33,8 @@ func closeOrPanic(p io.Closer) {
 
 func fastFlushConfig() *ProducerConfig {
 	config := NewProducerConfig()
-	config.FlushFrequency = 1 * time.Millisecond // fast flush
+	config.FlushFrequency = 50 * time.Millisecond
+	config.FlushMsgCount = 100
 	return config
 }
 
