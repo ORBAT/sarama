@@ -139,16 +139,16 @@ func testProducingMessages(t *testing.T, config *ProducerConfig) {
 	}
 }
 
-func newParallelProdConf() *ProducerConfig {
+func newProdConf() *ProducerConfig {
 	pc := NewProducerConfig()
-	pc.FlushFrequency = 50 * time.Millisecond
+	pc.FlushFrequency = 5 * time.Millisecond
 	pc.FlushMsgCount = 200
 	pc.ChannelBufferSize = 20
 	return pc
 }
 
 func TestFuncQueuingWriterParallel(t *testing.T) {
-	pc := newParallelProdConf()
+	pc := newProdConf()
 	// defer LogTo(os.Stderr)()
 	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
 	if err != nil {
@@ -160,11 +160,11 @@ func TestFuncQueuingWriterParallel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testWriterParallel(client, producer, pc, 100, t)
+	funcTestWrParallel(client, producer, pc, 10, t)
 }
 
 func TestFuncQueuingWriterSingle(t *testing.T) {
-	pc := NewProducerConfig()
+	pc := newProdConf()
 
 	// defer LogTo(os.Stderr)()
 	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
@@ -177,11 +177,11 @@ func TestFuncQueuingWriterSingle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testWriter(client, producer, t)
+	testWriterFunc(client, producer, t)
 }
 
 func TestFuncUnsafeWriterParallel(t *testing.T) {
-	pc := newParallelProdConf()
+	pc := newProdConf()
 	// defer LogTo(os.Stderr)()
 	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
 	if err != nil {
@@ -193,11 +193,11 @@ func TestFuncUnsafeWriterParallel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testWriterParallel(client, producer, pc, 100, t)
+	funcTestWrParallel(client, producer, pc, 10, t)
 }
 
 func TestFuncUnsafeWriterSingle(t *testing.T) {
-	pc := NewProducerConfig()
+	pc := newProdConf()
 	// defer LogTo(os.Stderr)()
 	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
 	if err != nil {
@@ -209,10 +209,10 @@ func TestFuncUnsafeWriterSingle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testWriter(client, producer, t)
+	testWriterFunc(client, producer, t)
 }
 
-func testWriter(client *Client, producer io.WriteCloser, t *testing.T) {
+func testWriterFunc(client *Client, producer io.WriteCloser, t *testing.T) {
 
 	checkKafkaAvailability(t)
 
@@ -254,27 +254,31 @@ func testWriter(client *Client, producer io.WriteCloser, t *testing.T) {
 	}
 }
 
-func writeInParallel(w io.Writer, batchSize int, t *testing.T) *sync.WaitGroup {
+func writeInParallel(w io.Writer, nWorkers, batchSize int, t *testing.T) *sync.WaitGroup {
 	var wg sync.WaitGroup
-	wg.Add(batchSize)
-	for i := 0; i < batchSize; i++ {
+	wg.Add(nWorkers)
+	for i := 0; i < nWorkers; i++ {
 		go func(i int, wg *sync.WaitGroup) {
 			defer wg.Done()
-			msg := []byte(fmt.Sprintf("%d", i))
-			n, err := w.Write(msg)
-			if err != nil {
-				t.Error("Write error", err)
-			}
-			if n != len(msg) {
-				t.Error("Wrote", n, "bytes, expected", len(msg))
+			for msgN := i * batchSize; msgN < batchSize*(i+1); msgN++ {
+				msg := []byte(fmt.Sprintf("%d", msgN))
+				n, err := w.Write(msg)
+				if err != nil {
+					t.Error("Write error", err)
+				}
+				if n != len(msg) {
+					t.Error("Wrote", n, "bytes, expected", len(msg))
+				}
 			}
 		}(i, &wg)
 	}
 	return &wg
 }
 
-func testWriterParallel(client *Client, w io.WriteCloser, conf *ProducerConfig, batchSize int, t *testing.T) {
+func funcTestWrParallel(client *Client, w io.WriteCloser, conf *ProducerConfig, nWorkers int, t *testing.T) {
 	checkKafkaAvailability(t)
+
+	batchSize := TestBatchSize
 
 	consumerConfig := NewConsumerConfig()
 	consumerConfig.OffsetMethod = OffsetMethodNewest
@@ -285,12 +289,12 @@ func testWriterParallel(client *Client, w io.WriteCloser, conf *ProducerConfig, 
 	}
 	defer consumer.Close()
 
-	writeInParallel(w, batchSize, t).Wait()
+	writeInParallel(w, nWorkers, batchSize, t).Wait()
 
 	defer w.Close()
-	recvd := make([]*ConsumerEvent, batchSize)
+	recvd := make([]*ConsumerEvent, nWorkers*batchSize)
 	events := consumer.Events()
-	for i := 0; i < batchSize; i++ {
+	for i := 0; i < nWorkers*batchSize; i++ {
 		select {
 		case <-time.After(10 * time.Second):
 			t.Fatal("Not received any more events in the last 10 seconds.")
@@ -299,6 +303,9 @@ func testWriterParallel(client *Client, w io.WriteCloser, conf *ProducerConfig, 
 			idx, err := strconv.Atoi(string(event.Value))
 			if err != nil {
 				t.Fatalf("Expected a string with a number, got %#v (%s). Error was %s", event.Value, string(event.Value), err.Error())
+			}
+			if recvd[idx] != nil {
+				t.Errorf("A message with index %d has already been received?", idx)
 			}
 			recvd[idx] = event
 		}
