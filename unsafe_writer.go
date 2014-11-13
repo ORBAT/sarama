@@ -69,9 +69,7 @@ func (c *Client) NewUnsafeWriter(topic string, config *ProducerConfig) (p *Unsaf
 	return
 }
 
-// NewUnsafeWriter returns a new UnsafeWriter.
-
-// If either of the configs is nil, sarama default configuration will be used for the omitted config.
+// NewUnsafeWriter returns a new UnsafeWriter. If either of the configs is nil, sarama default configuration will be used for the omitted config.
 func NewUnsafeWriter(clientId, topic string, brokers []string, pConfig *ProducerConfig, cConfig *ClientConfig) (p *UnsafeWriter, err error) {
 	kc, err := NewClient(clientId, brokers, cConfig)
 	if err != nil {
@@ -152,11 +150,6 @@ func (k *UnsafeWriter) CloseAll() (err error) {
 // SetLogger sets the logger used by this UnsafeWriter.
 func (k *UnsafeWriter) SetLogger(l *log.Logger) {
 	k.log = l
-}
-
-// CloseWait blocks until the UnsafeWriter is closed.
-func (k *UnsafeWriter) CloseWait() {
-	<-k.closedCh
 }
 
 // Close closes the UnsafeWriter. If k.CloseClient is true, the client will be closed as well (basically turning Close() into CloseAll().)

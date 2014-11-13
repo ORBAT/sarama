@@ -15,11 +15,11 @@ import (
 // QueuingWriter is an io.Writer that writes messages to Kafka. Parallel calls to Write() will cause messages to be queued by the producer, and
 // each Write() call will block until a response is received.
 type QueuingWriter struct {
-	kp       *Producer
-	id       string
-	topic    string
-	closedCh chan struct{}
-	log      *log.Logger
+	kp     *Producer
+	id     string
+	topic  string
+	stopCh chan struct{}
+	log    *log.Logger
 	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseAll()
 	CloseClient bool
 	// mut is the mutex for errChForMsg
@@ -51,7 +51,7 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 		id:          id,
 		topic:       topic,
 		log:         pl,
-		closedCh:    make(chan struct{}),
+		stopCh:      make(chan struct{}),
 		errChForMsg: make(map[*MessageToSend]chan error)}
 
 	go func(p *QueuingWriter) {
@@ -61,20 +61,20 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 		p.log.Println("Starting response listener")
 		for {
 			select {
-			case <-p.closedCh:
+			case <-p.stopCh:
 				p.log.Println("Closing response listener")
 				return
 			case perr, ok := <-errCh:
 				if !ok {
 					pl.Println("Errors() channel closed?!")
-					close(p.closedCh)
+					close(p.stopCh)
 					return
 				}
 				p.sendProdResponse(perr.Msg, perr.Err)
 			case succ, ok := <-succCh:
 				if !ok {
 					pl.Println("Successes() channel closed?!")
-					close(p.closedCh)
+					close(p.stopCh)
 					return
 				}
 				p.sendProdResponse(succ, nil)
@@ -153,7 +153,7 @@ func (qw *QueuingWriter) ReadFrom(r io.Reader) (n int64, err error) {
 
 func (qw *QueuingWriter) Closed() (closed bool) {
 	select {
-	case _, ok := <-qw.closedCh:
+	case _, ok := <-qw.stopCh:
 		closed = !ok
 	default:
 	}
@@ -165,17 +165,12 @@ func (qw *QueuingWriter) SetLogger(l *log.Logger) {
 	qw.log = l
 }
 
-// CloseWait blocks until the QueuingWriter is closed.
-func (qw *QueuingWriter) CloseWait() {
-	<-qw.closedCh
-}
-
 func (qw *QueuingWriter) CloseAll() (err error) {
 	if qw.Closed() {
 		return syscall.EINVAL
 	}
 
-	defer close(qw.closedCh)
+	// defer close(qw.stopCh)
 	var me *MultiError
 	if perr := qw.kp.Close(); perr != nil {
 		me = &MultiError{Errors: append(make([]error, 0, 2), perr)}
@@ -209,6 +204,6 @@ func (qw *QueuingWriter) Close() error {
 	if qw.CloseClient == true {
 		return qw.CloseAll()
 	}
-	close(qw.closedCh)
+	close(qw.stopCh)
 	return qw.kp.Close()
 }
