@@ -10,6 +10,11 @@ import (
 	"syscall"
 )
 
+type work struct {
+	resultCh chan error // channel to return result of write on
+	*MessageToSend
+}
+
 // QueuingWriter is an io.Writer that writes messages to Kafka. Parallel calls to Write() will cause messages to be queued by the producer, and
 // each Write() call will block until a response is received.
 type QueuingWriter struct {
@@ -24,6 +29,7 @@ type QueuingWriter struct {
 	closeMut    sync.Mutex   // mutex for Close and CloseAll
 	errChForMsg map[*MessageToSend]chan error
 	pendingWg   sync.WaitGroup // WaitGroup for pending message responses
+	workCh      chan work      // channel for sending writes to event loop
 }
 
 // DefaultChanBufferSize is the default ChannelBufferSize to use when NewQueuingWriter is called with a nil config.
@@ -51,18 +57,24 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 		topic:       topic,
 		log:         pl,
 		stopCh:      make(chan struct{}),
-		errChForMsg: make(map[*MessageToSend]chan error)}
+		errChForMsg: make(map[*MessageToSend]chan error),
+		workCh:      make(chan work, config.ChannelBufferSize)}
 
 	go func() {
 		errCh := p.kp.Errors()
 		succCh := p.kp.Successes()
 
-		p.log.Println("Starting response listener")
+		p.log.Println("Starting event loop")
 		for {
 			select {
 			case <-p.stopCh:
-				p.log.Println("Closing response listener")
+				p.log.Println("Stopping event loop")
 				return
+			case work := <-p.workCh:
+				p.errChForMsg[work.MessageToSend] = work.resultCh
+				go func() {
+					p.kp.Input() <- work.MessageToSend
+				}()
 			case perr, ok := <-errCh:
 				if !ok {
 					p.log.Println("Errors() channel closed?!")
@@ -85,13 +97,12 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 }
 
 func (qw *QueuingWriter) sendProdResponse(msg *MessageToSend, perr error) {
-	qw.mut.RLock()
 	receiver, ok := qw.errChForMsg[msg]
-	qw.mut.RUnlock()
 	if !ok {
 		qw.log.Panicf("Nobody wanted *MessageToSend %p?", msg)
 	} else {
 		receiver <- perr
+		delete(qw.errChForMsg, msg)
 	}
 }
 
@@ -103,22 +114,15 @@ func (qw *QueuingWriter) sendProdResponse(msg *MessageToSend, perr error) {
 // TODO(ORBAT): QueuingWriter Write() timeout
 func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 	n = len(p)
-	msg := &MessageToSend{Topic: qw.topic, Key: nil, Value: ByteEncoder(p)}
-	errCh := make(chan error, 1)
-
-	qw.mut.Lock()
+	resCh := make(chan error, 1)
+	wrk := work{MessageToSend: &MessageToSend{Topic: qw.topic, Key: nil, Value: ByteEncoder(p)}, resultCh: resCh}
 	qw.pendingWg.Add(1)
-	qw.errChForMsg[msg] = errCh
-	qw.mut.Unlock()
-	qw.kp.Input() <- msg
+	defer qw.pendingWg.Done()
+	qw.workCh <- wrk
 
 	select {
-	case resp := <-errCh:
-		qw.mut.Lock()
-		qw.pendingWg.Done()
-		close(errCh)
-		delete(qw.errChForMsg, msg)
-		qw.mut.Unlock()
+	case resp := <-resCh:
+		close(resCh)
 		if resp != nil {
 			err = resp
 			n = 0
