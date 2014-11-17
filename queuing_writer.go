@@ -157,52 +157,46 @@ func (qw *QueuingWriter) stopListener() {
 // CloseAll closes both the underlying Producer and Client. If the writer has already been closed, CloseAll will
 // return syscall.EINVAL.
 func (qw *QueuingWriter) CloseAll() (err error) {
-	qw.closeMut.Lock()
-	defer qw.closeMut.Unlock()
-
-	if qw.Closed() {
-		return syscall.EINVAL
-	}
-
-	qw.log.Println("Closing producer and client")
-
-	qw.stopListener()
-
-	var me *MultiError
-	if perr := qw.kp.Close(); perr != nil {
-		me = &MultiError{Errors: append(make([]error, 0, 2), perr)}
-	}
-
-	if clerr := qw.kp.client.Close(); clerr != nil {
-		if me == nil {
-			me = &MultiError{Errors: make([]error, 0, 1)}
-		}
-		me.Errors = append(me.Errors, clerr)
-	}
-
-	if me != nil {
-		err = me
-	}
-
-	return
+	qw.CloseClient = true
+	return qw.Close()
 }
 
 // Close closes the writer and its underlying producer. If CloseClient is true,
 // the client will be closed as well. If the writer has already been closed, Close will
 // return syscall.EINVAL.
-func (qw *QueuingWriter) Close() error {
+func (qw *QueuingWriter) Close() (err error) {
+	qw.log.Println("Close() called", qw.CloseClient)
 	qw.closeMut.Lock()
 	defer qw.closeMut.Unlock()
 
-	if qw.CloseClient == true {
-		return qw.CloseAll()
-	}
+	qw.log.Println("Close() mutex acquired")
+
 	if qw.Closed() {
 		return syscall.EINVAL
 	}
-	qw.log.Println("Closing producer")
 
 	qw.stopListener()
 
-	return qw.kp.Close()
+	var me *MultiError
+
+	qw.log.Println("Closing producer")
+
+	if perr := qw.kp.Close(); perr != nil {
+		me = &MultiError{Errors: append(make([]error, 0, 2), perr)}
+	}
+
+	if qw.CloseClient {
+		qw.log.Println("Closing client")
+		if clerr := qw.kp.client.Close(); clerr != nil {
+			if me == nil {
+				me = &MultiError{Errors: make([]error, 0, 1)}
+			}
+			me.Errors = append(me.Errors, clerr)
+		}
+	}
+
+	if me != nil {
+		err = me
+	}
+	return
 }
