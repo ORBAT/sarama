@@ -88,6 +88,7 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 					close(p.stopCh)
 					continue
 				}
+				// p.log.Printf("Received %p", succ)
 				p.sendProdResponse(succ, nil)
 			}
 		}
@@ -99,7 +100,7 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 func (qw *QueuingWriter) sendProdResponse(msg *MessageToSend, perr error) {
 	receiver, ok := qw.errChForMsg[msg]
 	if !ok {
-		qw.log.Panicf("Nobody wanted *MessageToSend %p?", msg)
+		qw.log.Panicf("Nobody wanted *MessageToSend %p (%#v)? Map is %#v", msg, msg, qw.errChForMsg)
 	} else {
 		receiver <- perr
 		delete(qw.errChForMsg, msg)
