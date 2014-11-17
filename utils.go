@@ -31,14 +31,24 @@ func (slice int32Slice) Swap(i, j int) {
 
 func withRecover(fn func()) {
 	defer func() {
-		if PanicHandler != nil {
+		handler := PanicHandler
+		if handler != nil {
 			if err := recover(); err != nil {
-				PanicHandler(err)
+				handler(err)
 			}
 		}
 	}()
 
 	fn()
+}
+
+func safeAsyncClose(c io.Closer) {
+	tmp := c // local var prevents clobbering in goroutine
+	go withRecover(func() {
+		if err := tmp.Close(); err != nil {
+			Logger.Println("Error closing", tmp, ":", err)
+		}
+	})
 }
 
 // Encoder is a simple interface for any type that can be encoded as an array of bytes

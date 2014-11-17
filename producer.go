@@ -169,8 +169,7 @@ func (m *MessageToSend) byteSize() int {
 }
 
 // ProduceError is the type of error generated when the producer fails to deliver a message.
-// It contains the original MessageToSend as well as the actual error value. If the AckSuccesses configuration
-// value is set to true then every message sent generates a ProduceError, but successes will have a nil Err field.
+// It contains the original MessageToSend as well as the actual error value.
 type ProduceError struct {
 	Msg *MessageToSend
 	Err error
@@ -208,9 +207,16 @@ func (p *Producer) Input() chan<- *MessageToSend {
 // it may otherwise leak memory. You must call this before calling Close on the
 // underlying client.
 func (p *Producer) Close() error {
-	go func() {
+	go withRecover(func() {
 		p.input <- &MessageToSend{flags: shutdown}
-	}()
+	})
+
+	if p.config.AckSuccesses {
+		go withRecover(func() {
+			for _ = range p.successes {
+			}
+		})
+	}
 
 	var errors ProduceErrors
 	for event := range p.errors {
@@ -243,6 +249,7 @@ func (p *Producer) topicDispatcher() {
 		}
 
 		if msg.flags&shutdown != 0 {
+			Logger.Println("Producer shutting down.")
 			break
 		}
 
@@ -264,8 +271,6 @@ func (p *Producer) topicDispatcher() {
 
 		handler <- msg
 	}
-
-	Logger.Println("Producer shutting down.")
 
 	for _, handler := range handlers {
 		close(handler)
@@ -330,15 +335,15 @@ func (p *Producer) leaderDispatcher(topic string, partition int32, input chan *M
 			if backlog == nil {
 				// on the very first retried message we send off a chaser so that we know when everything "in between" has made it
 				// back to us and we can safely flush the backlog (otherwise we risk re-ordering messages)
+				Logger.Printf("producer/leader state change to [retrying] on %s/%d\n", topic, partition)
 				output <- &MessageToSend{Topic: topic, partition: partition, flags: chaser}
-				Logger.Println("Producer dispatching retried messages to new leader.")
 				backlog = make([]*MessageToSend, 0)
 				p.unrefBrokerWorker(leader)
 				output = nil
 			}
 		} else {
 			// retry *and* chaser flag set, flush the backlog and return to normal processing
-			Logger.Println("Producer finished dispatching retried messages, processing backlog.")
+			Logger.Printf("producer/leader state change to [flushing] on %s/%d\n", topic, partition)
 			if output == nil {
 				err := p.client.RefreshTopicMetadata(topic)
 				if err != nil {
@@ -360,7 +365,7 @@ func (p *Producer) leaderDispatcher(topic string, partition int32, input chan *M
 			for _, msg := range backlog {
 				output <- msg
 			}
-			Logger.Println("Producer backlog processsed.")
+			Logger.Printf("producer/leader state change to [normal] on %s/%d\n", topic, partition)
 
 			backlog = nil
 			continue
@@ -417,7 +422,7 @@ func (p *Producer) messageAggregator(broker *Broker, input chan *MessageToSend) 
 
 			if (bytesAccumulated+msg.byteSize() >= forceFlushThreshold()) ||
 				(p.config.Compression != CompressionNone && bytesAccumulated+msg.byteSize() >= p.config.MaxMessageBytes) {
-				Logger.Println("Producer accumulated maximum request size, forcing blocking flush.")
+				Logger.Println("producer/aggregator hit maximum request size, forcing blocking flush")
 				flusher <- buffer
 				buffer = nil
 				doFlush = nil
@@ -467,6 +472,8 @@ func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 			if currentRetries[msg.Topic] != nil && currentRetries[msg.Topic][msg.partition] != nil {
 				if msg.flags&chaser == chaser {
 					// we can start processing this topic/partition again
+					Logger.Printf("producer/flusher state change to [normal] on %s/%d\n",
+						msg.Topic, msg.partition)
 					currentRetries[msg.Topic][msg.partition] = nil
 				}
 				p.retryMessages([]*MessageToSend{msg}, currentRetries[msg.Topic][msg.partition])
@@ -498,6 +505,7 @@ func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 			continue
 		default:
 			p.client.disconnectBroker(broker)
+			Logger.Println("producer/flusher state change to [closing] because", err)
 			closing = err
 			p.retryMessages(batch, err)
 			continue
@@ -532,6 +540,8 @@ func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 						p.returnSuccesses(msgs)
 					}
 				case UnknownTopicOrPartition, NotLeaderForPartition, LeaderNotAvailable:
+					Logger.Printf("producer/flusher state change to [retrying] on %s/%d because %v\n",
+						topic, partition, block.Err)
 					if currentRetries[topic] == nil {
 						currentRetries[topic] = make(map[int32]error)
 					}
@@ -681,24 +691,21 @@ func (p *Producer) buildRequest(batch map[string]map[int32][]*MessageToSend) *Pr
 
 func (p *Producer) returnErrors(batch []*MessageToSend, err error) {
 	for _, msg := range batch {
-		if msg == nil {
-			continue
+		if msg != nil {
+			p.errors <- &ProduceError{Msg: msg, Err: err}
 		}
-		p.errors <- &ProduceError{Msg: msg, Err: err}
 	}
 }
 
 func (p *Producer) returnSuccesses(batch []*MessageToSend) {
 	for _, msg := range batch {
-		if msg == nil {
-			continue
+		if msg != nil {
+			p.successes <- msg
 		}
-		p.successes <- msg
 	}
 }
 
 func (p *Producer) retryMessages(batch []*MessageToSend, err error) {
-	Logger.Println("Producer requeueing batch of", len(batch), "messages due to error:", err)
 	for _, msg := range batch {
 		if msg == nil {
 			continue
@@ -710,7 +717,6 @@ func (p *Producer) retryMessages(batch []*MessageToSend, err error) {
 			p.retries <- msg
 		}
 	}
-	Logger.Println("Messages requeued")
 }
 
 type brokerWorker struct {
