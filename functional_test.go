@@ -299,18 +299,24 @@ func writeInParallel(w io.Writer, nWorkers, batchSize int, t *testing.T) *sync.W
 	var wg sync.WaitGroup
 	wg.Add(nWorkers)
 	for i := 0; i < nWorkers; i++ {
-		go func(i int, wg *sync.WaitGroup) {
-			defer wg.Done()
-			for msgN := i * batchSize; msgN < batchSize*(i+1); msgN++ {
-				msg := []byte(fmt.Sprintf("%d", msgN))
-				n, err := w.Write(msg)
-				if err != nil {
-					t.Error("Write error", err)
-				}
-				if n != len(msg) {
-					t.Error("Wrote", n, "bytes, expected", len(msg))
-				}
+		go func(i int, workerWg *sync.WaitGroup) {
+			var msgWg sync.WaitGroup
+			msgWg.Add(batchSize)
+			defer workerWg.Done()
+			for msgn := 0; msgn < batchSize; msgn++ {
+				go func(msgN int, mwg *sync.WaitGroup) {
+					defer mwg.Done()
+					msg := []byte(fmt.Sprintf("%d", (i*batchSize)+msgN))
+					n, err := w.Write(msg)
+					if err != nil {
+						t.Error("Write error", err)
+					}
+					if n != len(msg) {
+						t.Error("Wrote", n, "bytes, expected", len(msg))
+					}
+				}(msgn, &msgWg)
 			}
+			msgWg.Wait()
 		}(i, &wg)
 	}
 	return &wg
