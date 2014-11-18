@@ -93,30 +93,38 @@ func testProducingMessages(t *testing.T, config *ProducerConfig) {
 	}
 	defer safeClose(t, consumer)
 
-	config.AckSuccesses = true
 	producer, err := NewProducer(client, config)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	expectedResponses := TestBatchSize
+	promise := make(chan error)
 	for i := 1; i <= TestBatchSize; {
-		msg := &MessageToSend{Topic: "single_partition", Key: nil, Value: StringEncoder(fmt.Sprintf("testing %d", i))}
+		msg := &MessageToSend{Topic: "single_partition", Key: nil, Value: StringEncoder(fmt.Sprintf("testing %d", i)), Promise: promise}
 		select {
 		case producer.Input() <- msg:
 			i++
 		case ret := <-producer.Errors():
 			t.Fatal(ret.Err)
-		case <-producer.Successes():
-			expectedResponses--
+		case err := <-promise:
+			if err != nil {
+				t.Fatal(err)
+			} else {
+				expectedResponses--
+			}
 		}
 	}
 	for expectedResponses > 0 {
 		select {
 		case ret := <-producer.Errors():
 			t.Fatal(ret.Err)
-		case <-producer.Successes():
-			expectedResponses--
+		case err := <-promise:
+			if err != nil {
+				t.Fatal(err)
+			} else {
+				expectedResponses--
+			}
 		}
 	}
 	err = producer.Close()
