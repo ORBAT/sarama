@@ -256,7 +256,7 @@ func TestFuncUnsafeWriterSingle(t *testing.T) {
 func testWriterFunc(client *Client, producer io.WriteCloser, t *testing.T) {
 
 	checkKafkaAvailability(t)
-
+	batchSize := TestBatchSize / 100
 	consumerConfig := NewConsumerConfig()
 	consumerConfig.OffsetMethod = OffsetMethodNewest
 
@@ -267,7 +267,7 @@ func testWriterFunc(client *Client, producer io.WriteCloser, t *testing.T) {
 	defer consumer.Close()
 
 	var msg []byte
-	for i := 0; i < TestBatchSize; i++ {
+	for i := 0; i < batchSize; i++ {
 		msg = []byte(fmt.Sprintf("testing %d", i))
 		n, err := producer.Write(msg)
 
@@ -281,7 +281,7 @@ func testWriterFunc(client *Client, producer io.WriteCloser, t *testing.T) {
 	producer.Close()
 
 	events := consumer.Events()
-	for i := 0; i < TestBatchSize; i++ {
+	for i := 0; i < batchSize; i++ {
 		select {
 		case <-time.After(10 * time.Second):
 			t.Fatal("Not received any more events in the last 10 seconds.")
