@@ -144,6 +144,7 @@ func (qw *QueuingWriter) ReadFrom(r io.Reader) (n int64, err error) {
 	return int64(ni), err
 }
 
+// Closed returns true if the QueuingWriter has been closed, false otherwise. Thread-safe.
 func (qw *QueuingWriter) Closed() bool {
 	return atomic.LoadInt32(&qw.closed) != 0
 }
