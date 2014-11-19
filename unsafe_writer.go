@@ -131,6 +131,8 @@ func (uw *UnsafeWriter) Close() (err error) {
 
 	atomic.StoreInt32(&uw.closed, 1)
 
+	close(uw.closedCh)
+
 	var me *MultiError
 
 	uw.log.Println("Closing producer")
