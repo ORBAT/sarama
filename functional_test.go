@@ -147,12 +147,74 @@ func testProducingMessages(t *testing.T, config *ProducerConfig) {
 	}
 }
 
+func TestFuncMultiPartitionProduce(t *testing.T) {
+	checkKafkaAvailability(t)
+	defer LogTo(os.Stdout)()
+	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer safeClose(t, client)
+
+	config := newProdConf()
+	config.Partitioner = NewRoundRobinPartitioner
+	producer, err := NewProducer(client, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(TestBatchSize)
+
+	for i := 1; i <= TestBatchSize; i++ {
+
+		go func(i int, w *sync.WaitGroup) {
+			defer w.Done()
+			promise := make(chan error)
+			defer close(promise)
+			msg := &MessageToSend{Topic: "multi_partition", Key: nil, Value: ByteEncoder([]byte(fmt.Sprintf("%d", i))), Promise: promise}
+			producer.Input() <- msg
+			select {
+			case ret := <-producer.Errors():
+				t.Fatal(ret.Err)
+			case err := <-promise:
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+		}(i, &wg)
+	}
+
+	wg.Wait()
+	if err := producer.Close(); err != nil {
+		t.Error(err)
+	}
+}
+
 func newProdConf() *ProducerConfig {
 	pc := NewProducerConfig()
 	pc.FlushFrequency = 5 * time.Millisecond
 	pc.FlushMsgCount = 200
 	pc.ChannelBufferSize = 20
 	return pc
+}
+
+func TestFuncQueuingWriterMultiPart(t *testing.T) {
+	defer LogTo(os.Stderr)()
+	pc := newProdConf()
+	pc.Partitioner = NewRoundRobinPartitioner
+	// defer LogTo(os.Stderr)()
+	client, err := NewClient("functional_test", []string{kafkaAddr}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	producer, err := client.NewQueuingWriter("multi_partition", pc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeInParallel(producer, 10, 100, t).Wait()
 }
 
 func TestFuncQueuingWriterParallel(t *testing.T) {
