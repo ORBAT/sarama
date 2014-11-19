@@ -276,10 +276,10 @@ func writeInParallel(w io.Writer, nWorkers, batchSize int, t *testing.T) *sync.W
 					msg := []byte(fmt.Sprintf("%d", (i*batchSize)+msgN))
 					n, err := w.Write(msg)
 					if err != nil {
-						t.Error("Write error", err)
+						t.Fatal("Write error", err)
 					}
 					if n != len(msg) {
-						t.Error("Wrote", n, "bytes, expected", len(msg))
+						t.Fatal("Wrote", n, "bytes, expected", len(msg))
 					}
 				}(msgn, &msgWg)
 			}
