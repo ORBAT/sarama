@@ -53,7 +53,7 @@ func (c *Client) NewQueuingWriter(topic string, config *ProducerConfig) (p *Queu
 func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 	n = len(p)
 	resCh := make(chan error, 1)
-
+	defer close(resCh)
 	msg := &MessageToSend{Topic: qw.topic, Key: nil, Value: ByteEncoder(p), Promise: resCh}
 
 	qw.pendingWg.Add(1)
@@ -62,11 +62,9 @@ func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 
 	select {
 	case perr := <-qw.kp.Errors(): // note: temporary until Producer API is frozen
-		close(resCh) // might cause runtime to hurl with send on closed channel but oh well
 		err = perr.Err
 		n = 0
 	case resp := <-resCh:
-		close(resCh)
 		if resp != nil {
 			err = resp
 			n = 0
