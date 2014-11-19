@@ -62,6 +62,7 @@ func (qw *QueuingWriter) Write(p []byte) (n int, err error) {
 
 	select {
 	case perr := <-qw.kp.Errors(): // note: temporary until Producer API is frozen
+		qw.log.Printf("msg %s got error on Errors(): %s", msg.Value, perr.Err)
 		err = perr.Err
 		n = 0
 	case resp := <-resCh:
