@@ -325,7 +325,7 @@ func writeInParallel(w io.Writer, nWorkers, batchSize int, t *testing.T) *sync.W
 func funcTestWrParallel(client *Client, w io.WriteCloser, conf *ProducerConfig, nWorkers int, t *testing.T) {
 	checkKafkaAvailability(t)
 
-	batchSize := TestBatchSize
+	batchSize := 10
 
 	consumerConfig := NewConsumerConfig()
 	consumerConfig.OffsetMethod = OffsetMethodNewest
