@@ -5,12 +5,10 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"sync"
+	"sync/atomic"
 	"syscall"
 )
-
-// BUG(ORBAT): UnsafeWriter's Close() does not wait for pending Write() calls to finish
-
-// BUG(ORBAT): UnsafeWriter's Close() has a race condition
 
 // UnsafeWriter is an io.Writer that writes messages to Kafka, ignoring any error responses sent by the brokers. Parallel calls to Write are safe.
 //
@@ -19,9 +17,10 @@ type UnsafeWriter struct {
 	kp       *Producer
 	id       string
 	topic    string
-	closed   bool
+	closed   int32
 	closedCh chan struct{}
 	log      *log.Logger
+	closeMut sync.Mutex // mutex for Close and CloseAll
 	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseAll()
 	CloseClient bool
 }
@@ -41,7 +40,9 @@ func (c *Client) NewUnsafeWriter(topic string, config *ProducerConfig) (p *Unsaf
 	if err != nil {
 		return nil, err
 	}
+
 	p = &UnsafeWriter{kp: kp, id: id, topic: topic, log: pl, closedCh: closedCh}
+
 	go func() {
 		pl.Println("Starting error listener")
 		for {
@@ -85,84 +86,79 @@ func NewUnsafeWriter(clientId, topic string, brokers []string, pConfig *Producer
 // or 0 if reading from r returned an error. Implements io.ReaderFrom.
 //
 // Note that UnsafeWriter doesn't support "streaming", so r is read in full before it's sent.
-func (k *UnsafeWriter) ReadFrom(r io.Reader) (int64, error) {
+func (uw *UnsafeWriter) ReadFrom(r io.Reader) (int64, error) {
 	bs, err := ioutil.ReadAll(r)
 	if err != nil {
 		return 0, err
 	}
-	ni, _ := k.Write(bs)
+	ni, _ := uw.Write(bs)
 	return int64(ni), nil
 }
 
 // Write writes byte slices to Kafka without checking for error responses. n will always be len(p) and err will be nil.
-func (k *UnsafeWriter) Write(p []byte) (n int, err error) {
+func (uw *UnsafeWriter) Write(p []byte) (n int, err error) {
 	n = len(p)
 
-	k.kp.Input() <- &MessageToSend{Topic: k.topic, Key: nil, Value: ByteEncoder(p)}
+	uw.kp.Input() <- &MessageToSend{Topic: uw.topic, Key: nil, Value: ByteEncoder(p)}
 
 	return
-}
-
-// Client returns the client used by the UnsafeWriter.
-func (k *UnsafeWriter) Client() *Client {
-	return k.kp.client
 }
 
 // Closed returns true if the UnsafeWriter has been closed, false otherwise. Thread-safe.
-func (k *UnsafeWriter) Closed() (closed bool) {
-	select {
-	case _, ok := <-k.closedCh:
-		closed = !ok
-	default:
-	}
-	return
+func (uw *UnsafeWriter) Closed() bool {
+	return atomic.LoadInt32(&uw.closed) != 0
 }
 
-// CloseAll closes the UnsafeWriter and the client. Returns syscall.EINVAL if the producer is already closed, and an error of type *MultiError if one or both of
-// Producer#Close() and Client#Close() returns an error.
-func (k *UnsafeWriter) CloseAll() (err error) {
-	if k.Closed() {
+// SetLogger sets the logger used by this UnsafeWriter.
+func (uw *UnsafeWriter) SetLogger(l *log.Logger) {
+	uw.log = l
+}
+
+// CloseAll closes both the underlying Producer and Client. If the writer has already been closed, CloseAll will
+// return syscall.EINVAL.
+func (uw *UnsafeWriter) CloseAll() (err error) {
+	uw.CloseClient = true
+	return uw.Close()
+}
+
+// Close closes the writer and its underlying producer. If uw.CloseClient is true,
+// the client will be closed as well. If the writer has already been closed, Close will
+// return syscall.EINVAL.
+func (uw *UnsafeWriter) Close() (err error) {
+	uw.log.Println("Close() called", uw.CloseClient)
+	uw.closeMut.Lock()
+	defer uw.closeMut.Unlock()
+
+	uw.log.Println("Close() mutex acquired")
+
+	if uw.Closed() {
 		return syscall.EINVAL
 	}
 
-	defer close(k.closedCh)
+	atomic.StoreInt32(&uw.closed, 1)
+
+	close(uw.closedCh)
+
 	var me *MultiError
-	if perr := k.kp.Close(); perr != nil {
+
+	uw.log.Println("Closing producer")
+
+	if perr := uw.kp.Close(); perr != nil {
 		me = &MultiError{Errors: append(make([]error, 0, 2), perr)}
 	}
 
-	k.log.Println("Closing client")
-
-	if clerr := k.kp.client.Close(); clerr != nil {
-		if me == nil {
-			me = &MultiError{Errors: make([]error, 0, 1)}
+	if uw.CloseClient {
+		uw.log.Println("Closing client")
+		if clerr := uw.kp.client.Close(); clerr != nil {
+			if me == nil {
+				me = &MultiError{Errors: make([]error, 0, 1)}
+			}
+			me.Errors = append(me.Errors, clerr)
 		}
-		me.Errors = append(me.Errors, clerr)
 	}
 
 	if me != nil {
 		err = me
 	}
-
 	return
-}
-
-// SetLogger sets the logger used by this UnsafeWriter.
-func (k *UnsafeWriter) SetLogger(l *log.Logger) {
-	k.log = l
-}
-
-// Close closes the UnsafeWriter. If k.CloseClient is true, the client will be closed as well (basically turning Close() into CloseAll().)
-// If the UnsafeWriter has already been closed, Close() will return syscall.EINVAL.
-func (k *UnsafeWriter) Close() error {
-	if k.Closed() {
-		return syscall.EINVAL
-	}
-	close(k.closedCh)
-	k.log.Printf("Closing producer. CloseClient = %t", k.CloseClient)
-	if k.CloseClient == true {
-		return k.CloseAll()
-	}
-
-	return k.kp.Close()
 }
