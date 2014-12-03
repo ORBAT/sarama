@@ -239,6 +239,7 @@ func (p *Producer) Close() error {
 ///////////////////////////////////////////
 
 // singleton
+// dispatches messages by topic
 func (p *Producer) topicDispatcher() {
 	handlers := make(map[string]chan *MessageToSend)
 
@@ -256,7 +257,7 @@ func (p *Producer) topicDispatcher() {
 		if (p.config.Compression == CompressionNone && msg.Value != nil && msg.Value.Length() > p.config.MaxMessageBytes) ||
 			(msg.byteSize() > p.config.MaxMessageBytes) {
 
-			p.errors <- &ProduceError{Msg: msg, Err: MessageSizeTooLarge}
+			p.returnError(msg, MessageSizeTooLarge)
 			continue
 		}
 
@@ -280,13 +281,14 @@ func (p *Producer) topicDispatcher() {
 	p.retries <- &MessageToSend{flags: shutdown}
 
 	for msg := range p.input {
-		p.errors <- &ProduceError{Msg: msg, Err: ShuttingDown}
+		p.returnError(msg, ShuttingDown)
 	}
 
 	close(p.errors)
 }
 
 // one per topic
+// partitions messages, then dispatches them by partition
 func (p *Producer) partitionDispatcher(topic string, input chan *MessageToSend) {
 	handlers := make(map[int32]chan *MessageToSend)
 	partitioner := p.config.Partitioner()
@@ -295,7 +297,7 @@ func (p *Producer) partitionDispatcher(topic string, input chan *MessageToSend) 
 		if msg.flags&retried == 0 {
 			err := p.assignPartition(partitioner, msg)
 			if err != nil {
-				p.errors <- &ProduceError{Msg: msg, Err: err}
+				p.returnError(msg, err)
 				continue
 			}
 		}
@@ -321,6 +323,8 @@ func (p *Producer) partitionDispatcher(topic string, input chan *MessageToSend) 
 }
 
 // one per partition per topic
+// dispatches messages to the appropriate broker
+// also responsible for maintaining message order during retries
 func (p *Producer) leaderDispatcher(topic string, partition int32, input chan *MessageToSend) {
 	var leader *Broker
 	var output chan *MessageToSend
@@ -379,14 +383,14 @@ func (p *Producer) leaderDispatcher(topic string, partition int32, input chan *M
 			if backlog != nil {
 				err = p.client.RefreshTopicMetadata(topic)
 				if err != nil {
-					p.errors <- &ProduceError{Msg: msg, Err: err}
+					p.returnError(msg, err)
 					continue
 				}
 			}
 
 			leader, err = p.client.Leader(topic, partition)
 			if err != nil {
-				p.errors <- &ProduceError{Msg: msg, Err: err}
+				p.returnError(msg, err)
 				continue
 			}
 
@@ -401,6 +405,8 @@ func (p *Producer) leaderDispatcher(topic string, partition int32, input chan *M
 }
 
 // one per broker
+// groups messages together into appropriately-sized batches for sending to the broker
+// based on https://godoc.org/github.com/eapache/channels#BatchingChannel
 func (p *Producer) messageAggregator(broker *Broker, input chan *MessageToSend) {
 	var ticker *time.Ticker
 	var timer <-chan time.Time
@@ -459,6 +465,7 @@ shutdown:
 }
 
 // one per broker
+// takes a batch at a time from the messageAggregator and sends to the broker
 func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 	var closing error
 	currentRetries := make(map[string]map[int32]error)
@@ -560,6 +567,8 @@ func (p *Producer) flusher(broker *Broker, input chan []*MessageToSend) {
 }
 
 // singleton
+// effectively a "bridge" between the flushers and the topicDispatcher in order to avoid deadlock
+// based on https://godoc.org/github.com/eapache/channels#InfiniteChannel
 func (p *Producer) retryHandler() {
 	var buf []*MessageToSend
 	var msg *MessageToSend
@@ -644,13 +653,13 @@ func (p *Producer) buildRequest(batch map[string]map[int32][]*MessageToSend) *Pr
 				var err error
 				if msg.Key != nil {
 					if keyBytes, err = msg.Key.Encode(); err != nil {
-						p.errors <- &ProduceError{Msg: msg, Err: err}
+						p.returnError(msg, err)
 						continue
 					}
 				}
 				if msg.Value != nil {
 					if valBytes, err = msg.Value.Encode(); err != nil {
-						p.errors <- &ProduceError{Msg: msg, Err: err}
+						p.returnError(msg, err)
 						continue
 					}
 				}
@@ -692,10 +701,15 @@ func (p *Producer) buildRequest(batch map[string]map[int32][]*MessageToSend) *Pr
 	return req
 }
 
+func (p *Producer) returnError(msg *MessageToSend, err error) {
+	msg.flags = 0
+	p.errors <- &ProduceError{Msg: msg, Err: err}
+}
+
 func (p *Producer) returnErrors(batch []*MessageToSend, err error) {
 	for _, msg := range batch {
 		if msg != nil {
-			p.errors <- &ProduceError{Msg: msg, Err: err}
+			p.returnError(msg, err)
 		}
 	}
 }
@@ -703,6 +717,7 @@ func (p *Producer) returnErrors(batch []*MessageToSend, err error) {
 func (p *Producer) returnSuccesses(batch []*MessageToSend) {
 	for _, msg := range batch {
 		if msg != nil {
+			msg.flags = 0
 			p.successes <- msg
 		}
 	}
@@ -714,7 +729,7 @@ func (p *Producer) retryMessages(batch []*MessageToSend, err error) {
 			continue
 		}
 		if msg.flags&retried == retried {
-			p.errors <- &ProduceError{Msg: msg, Err: err}
+			p.returnError(msg, err)
 		} else {
 			msg.flags |= retried
 			p.retries <- msg

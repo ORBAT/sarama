@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"math/rand"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,16 @@ func (slice int32Slice) Less(i, j int) bool {
 
 func (slice int32Slice) Swap(i, j int) {
 	slice[i], slice[j] = slice[j], slice[i]
+}
+
+func dupeAndSort(input []int32) []int32 {
+	ret := make([]int32, 0, len(input))
+	for _, val := range input {
+		ret = append(ret, val)
+	}
+
+	sort.Sort(int32Slice(ret))
+	return ret
 }
 
 func withRecover(fn func()) {
