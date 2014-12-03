@@ -154,12 +154,6 @@ func (qw *QueuingWriter) SetLogger(l *log.Logger) {
 	qw.log = l
 }
 
-func (qw *QueuingWriter) stopListener() {
-	atomic.StoreInt32(&qw.closed, 1)
-	qw.pendingWg.Wait() // wait for pending writes to complete
-	close(qw.stopCh)    // signal response listener stop
-}
-
 // CloseAll closes both the underlying Producer and Client. If the writer has already been closed, CloseAll will
 // return syscall.EINVAL.
 func (qw *QueuingWriter) CloseAll() (err error) {
@@ -181,7 +175,9 @@ func (qw *QueuingWriter) Close() (err error) {
 		return syscall.EINVAL
 	}
 
-	qw.stopListener()
+	atomic.StoreInt32(&qw.closed, 1)
+	qw.pendingWg.Wait() // wait for pending writes to complete
+	close(qw.stopCh)    // signal response listener stop
 
 	var me *MultiError
 
