@@ -1,7 +1,6 @@
 package sarama
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -11,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/bradfitz/iter"
 )
 
 type none struct{}
@@ -149,46 +146,4 @@ func LogTo(w io.Writer) func() {
 		LogOutput = oldOutput
 		Logger = oldLogger
 	}
-}
-
-// CountingSemaphore allows limiting concurrent access to a resource by blocking acquiring if the limit has been met.
-type CountingSemaphore struct {
-	limit int
-	ch    chan struct{}
-}
-
-// Acquire acquires the semaphore, potentially blocking if the limit has been met.
-func (cs *CountingSemaphore) Acquire() {
-	<-cs.ch
-}
-
-// Release releases the semaphore. If there are more Release calls than Acquire, Release will panic.
-func (cs *CountingSemaphore) Release() {
-	select {
-	case cs.ch <- struct{}{}:
-	default:
-		panic(errors.New("Mismatched CountingSemaphore release"))
-	}
-}
-
-// Count returns how many times the semaphore is currently acquired
-func (cs *CountingSemaphore) Count() int {
-	return cs.limit - len(cs.ch)
-}
-
-// Remaining returns how many times the semaphore can still be acquired
-func (cs *CountingSemaphore) Remaining() int {
-	return len(cs.ch)
-}
-
-// NewCountingSemaphore creates a new CountingSemaphore. If limit is < 1, it will be set to 1.
-func NewCountingSemaphore(limit int) *CountingSemaphore {
-	if limit < 1 {
-		limit = 1
-	}
-	ch := make(chan struct{}, limit)
-	for _ = range iter.N(limit) {
-		ch <- struct{}{}
-	}
-	return &CountingSemaphore{limit: limit, ch: ch}
 }
