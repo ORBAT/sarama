@@ -21,6 +21,8 @@ type StdLogger interface {
 	Print(v ...interface{})
 	Printf(format string, v ...interface{})
 	Println(v ...interface{})
+	Panic(v ...interface{})
+	Panicf(format string, v ...interface{})
 }
 
 // PanicHandler is called for recovering from panics spawned internally to the library (and thus
