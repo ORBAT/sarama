@@ -124,7 +124,7 @@ func TimestampRandom() string {
 var LogOutput io.Writer = ioutil.Discard
 
 // NewLogger creates a new log.Logger using either "out" or, if it's nil, LogOutput for writing.
-func NewLogger(prefix string, out io.Writer) *log.Logger {
+func NewLogger(prefix string, out io.Writer) StdLogger {
 	if out == nil {
 		out = LogOutput
 	}

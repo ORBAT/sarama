@@ -19,7 +19,7 @@ type UnsafeWriter struct {
 	topic    string
 	closed   int32
 	closedCh chan struct{}
-	log      *log.Logger
+	log      StdLogger
 	closeMut sync.Mutex // mutex for Close and CloseAll
 	// if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseAll()
 	CloseClient bool

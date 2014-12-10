@@ -23,7 +23,7 @@ type QueuingWriter struct {
 	topic       string
 	stopCh      chan struct{}
 	closed      int32 // nonzero if the writer has been closed
-	log         *log.Logger
+	log         StdLogger
 	CloseClient bool         // if CloseClient is true, the client will be closed when Close() is called, effectively turning Close() into CloseAll()
 	mut         sync.RWMutex // mutex for errChForMsg
 	closeMut    sync.Mutex   // mutex for Close and CloseAll
