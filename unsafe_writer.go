@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -110,7 +109,7 @@ func (uw *UnsafeWriter) Closed() bool {
 }
 
 // SetLogger sets the logger used by this UnsafeWriter.
-func (uw *UnsafeWriter) SetLogger(l *log.Logger) {
+func (uw *UnsafeWriter) SetLogger(l StdLogger) {
 	uw.log = l
 }
 

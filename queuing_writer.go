@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -150,7 +149,7 @@ func (qw *QueuingWriter) Closed() bool {
 }
 
 // SetLogger sets the logger used by this QueuingWriter.
-func (qw *QueuingWriter) SetLogger(l *log.Logger) {
+func (qw *QueuingWriter) SetLogger(l StdLogger) {
 	qw.log = l
 }
 
